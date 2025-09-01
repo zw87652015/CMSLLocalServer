@@ -89,6 +89,17 @@ celery -A tasks worker --loglevel=info --queues=high_priority,normal_priority --
 celery -A tasks beat --loglevel=info
 ```
 
+### 4. 使用批处理脚本启动 (Windows)
+
+我们提供了一个批处理脚本 `start_system.bat` 用于在Windows上方便地启动系统。该脚本会自动检测并激活Conda环境（如果可用），然后启动Flask服务器和Celery worker。
+
+使用方法：
+1. 双击运行 `start_system.bat`
+2. 根据提示选择是否使用Conda环境（如果系统检测到Conda）
+3. 脚本将自动打开两个终端窗口分别运行Flask和Celery
+
+注意：使用前请确保已安装RabbitMQ并配置好环境变量。
+
 ## 使用说明
 
 ### 用户注册和登录
@@ -123,6 +134,7 @@ CMSLLocalServer/
 ├── models.py               # 数据库模型
 ├── config.py               # 配置文件
 ├── start_worker.py         # Celery Worker启动脚本
+├── start_system.bat        # Windows批处理脚本
 ├── requirements.txt        # Python依赖
 ├── .env                    # 环境变量
 ├── database.db             # SQLite数据库
