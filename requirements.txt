@@ -1,0 +1,26 @@
+# Web Framework
+Flask==2.3.3
+Flask-SQLAlchemy==3.0.5
+Flask-Login==0.6.3
+Flask-WTF==1.2.1
+
+# Task Queue and Message Broker
+celery==5.5.3
+kombu==5.5.4
+billiard==4.2.1
+
+# Database
+SQLAlchemy==2.0.23
+
+# File handling and utilities
+Werkzeug==2.3.7
+WTForms==3.1.0
+
+# Progress monitoring and logging
+psutil==5.9.6
+
+# Security
+bcrypt==4.1.2
+
+# Development and testing
+python-dotenv==1.0.0

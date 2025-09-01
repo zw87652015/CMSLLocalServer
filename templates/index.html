@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}首页 - COMSOL 仿真管理系统{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-upload me-2"></i>上传仿真文件</h5>
+            </div>
+            <div class="card-body">
+                <form id="uploadForm" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label for="fileInput" class="form-label">选择 .mph 文件</label>
+                        <input type="file" class="form-control" id="fileInput" name="file" accept=".mph" required>
+                        <div class="form-text">仅支持 COMSOL .mph 格式文件</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="priority" class="form-label">任务优先级</label>
+                        <select class="form-select" id="priority" name="priority">
+                            <option value="normal">普通优先级</option>
+                            <option value="high">高优先级</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-upload me-1"></i>上传并开始仿真
+                    </button>
+                </form>
+                <div id="uploadStatus" class="mt-3"></div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-chart-line me-2"></i>系统状态</h5>
+            </div>
+            <div class="card-body">
+                <div id="systemStats">
+                    <div class="row text-center">
+                        <div class="col-6">
+                            <div class="stat-item">
+                                <div class="stat-number" id="pendingTasks">-</div>
+                                <div class="stat-label">等待中</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="stat-item">
+                                <div class="stat-number" id="runningTasks">-</div>
+                                <div class="stat-label">运行中</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row text-center mt-3">
+                        <div class="col-6">
+                            <div class="stat-item">
+                                <div class="stat-number text-success" id="completedToday">-</div>
+                                <div class="stat-label">今日完成</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="stat-item">
+                                <div class="stat-number text-danger" id="failedToday">-</div>
+                                <div class="stat-label">今日失败</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5><i class="fas fa-tasks me-2"></i>我的任务</h5>
+                <button class="btn btn-sm btn-outline-primary" onclick="refreshTasks()">
+                    <i class="fas fa-sync-alt"></i> 刷新
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="tasksContainer">
+                    {% if tasks %}
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>文件名</th>
+                                        <th>状态</th>
+                                        <th>优先级</th>
+                                        <th>进度</th>
+                                        <th>创建时间</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tasksTable">
+                                    {% for task in tasks %}
+                                    <tr>
+                                        <td>{{ task.original_filename }}</td>
+                                        <td><span class="badge bg-{{ 'success' if task.status == 'completed' else 'danger' if task.status == 'failed' else 'warning' if task.status == 'running' else 'dark' if task.status == 'cancelled' else 'secondary' }}">{{ '已完成' if task.status == 'completed' else '失败' if task.status == 'failed' else '运行中' if task.status == 'running' else '已取消' if task.status == 'cancelled' else '队列中' if task.status == 'queued' else '待处理' }}</span></td>
+                                        <td><span class="badge bg-{{ 'danger' if task.priority == 'high' else 'primary' }}">{{ '高优先级' if task.priority == 'high' else '普通' }}</span></td>
+                                        <td>
+                                            <div class="progress task-progress">
+                                                <div class="progress-bar bg-{{ 'success' if task.status == 'completed' else 'danger' if task.status == 'failed' else 'warning' }}" 
+                                                     role="progressbar" aria-valuenow="{{ task.progress_percentage }}" aria-valuemin="0" aria-valuemax="100"
+                                                     data-width="{{ task.progress_percentage }}">
+                                                    {{ task.progress_percentage }}%
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                        <td>
+                                            {% if task.result_filename %}
+                                            <a href="{{ url_for('download_result', task_id=task.id) }}" class="btn btn-sm btn-success me-1">
+                                                <i class="fas fa-download"></i> 下载
+                                            </a>
+                                            {% endif %}
+                                            {% if task.status in ['pending', 'queued', 'running'] %}
+                                            <button class="btn btn-sm btn-warning me-1" onclick="cancelTask('{{ task.id }}')" title="取消任务">
+                                                <i class="fas fa-stop"></i>
+                                            </button>
+                                            {% endif %}
+                                            <button class="btn btn-sm btn-info me-1" onclick="viewLogs('{{ task.id }}')">
+                                                <i class="fas fa-file-alt"></i> 日志
+                                            </button>
+                                            <button class="btn btn-sm btn-danger" onclick="deleteTask('{{ task.id }}')" title="删除任务">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    {% else %}
+                        <div class="text-center text-muted py-4">
+                            <i class="fas fa-inbox fa-3x mb-3"></i>
+                            <p>暂无任务记录</p>
+                        </div>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Log Modal -->
+<div class="modal fade" id="logModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">任务日志</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="logContent" class="bg-dark text-light p-3 log-content"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Auto-refresh system stats and tasks
+setInterval(updateSystemStats, 5000);
+setInterval(refreshTasks, 10000);
+
+// Initial load
+updateSystemStats();
+</script>
+{% endblock %}

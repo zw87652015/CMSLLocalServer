@@ -1,0 +1,1 @@
+"D:\Program Files\COMSOL\COMSOL62\Multiphysics\bin\win64\comsolbatch.exe" -inputfile "E:\Documents\Codes\CMSLLocalServer\uploads\MyTest-correct.mph" -outputfile "E:\Documents\Codes\CMSLLocalServer\results\MyTest-correct_solved.mph"

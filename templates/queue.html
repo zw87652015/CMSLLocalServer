@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+
+{% block title %}队列状态 - COMSOL 仿真管理系统{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-list me-2"></i>任务队列</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6 class="text-warning"><i class="fas fa-clock me-1"></i>等待队列 ({{ pending_tasks|length }})</h6>
+                        {% if pending_tasks %}
+                            <div class="list-group">
+                                {% for task in pending_tasks %}
+                                <div class="list-group-item">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <strong>{{ task.original_filename }}</strong>
+                                            <br><small class="text-muted">{{ task.created_at.strftime('%H:%M:%S') }}</small>
+                                        </div>
+                                        <span class="badge bg-{{ 'danger' if task.priority == 'high' else 'primary' }}">
+                                            {{ task.priority }}
+                                        </span>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <div class="text-center text-muted py-3">
+                                <i class="fas fa-check-circle fa-2x mb-2"></i>
+                                <p>队列为空</p>
+                            </div>
+                        {% endif %}
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <h6 class="text-primary"><i class="fas fa-play me-1"></i>运行中 ({{ running_tasks|length }})</h6>
+                        {% if running_tasks %}
+                            <div class="list-group">
+                                {% for task in running_tasks %}
+                                <div class="list-group-item">
+                                    <div class="mb-2">
+                                        <strong>{{ task.original_filename }}</strong>
+                                        <br><small class="text-muted">开始时间: {{ task.started_at.strftime('%H:%M:%S') }}</small>
+                                    </div>
+                                    <div class="progress mb-2 task-progress">
+                                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                                             role="progressbar" aria-valuenow="{{ task.progress_percentage }}" aria-valuemin="0" aria-valuemax="100"
+                                             data-width="{{ task.progress_percentage }}">
+                                            {{ task.progress_percentage }}%
+                                        </div>
+                                    </div>
+                                    {% if task.current_step %}
+                                    <small class="text-info">{{ task.current_step }}</small>
+                                    {% endif %}
+                                </div>
+                                {% endfor %}
+                            </div>
+                        {% else %}
+                            <div class="text-center text-muted py-3">
+                                <i class="fas fa-pause-circle fa-2x mb-2"></i>
+                                <p>无运行任务</p>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-chart-bar me-2"></i>系统统计</h5>
+            </div>
+            <div class="card-body">
+                {% if stats %}
+                <div class="row text-center mb-3">
+                    <div class="col-6">
+                        <div class="stat-item">
+                            <div class="stat-number text-success">{{ stats.completed_tasks_today }}</div>
+                            <div class="stat-label">今日完成</div>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="stat-item">
+                            <div class="stat-number text-danger">{{ stats.failed_tasks_today }}</div>
+                            <div class="stat-label">今日失败</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label">CPU 使用率</label>
+                    <div class="progress">
+                        <div class="progress-bar bg-{{ 'danger' if stats.cpu_usage > 80 else 'warning' if stats.cpu_usage > 60 else 'success' }}" 
+                             role="progressbar" aria-valuenow="{{ stats.cpu_usage }}" aria-valuemin="0" aria-valuemax="100"
+                             data-width="{{ stats.cpu_usage }}">
+                            {{ "%.1f"|format(stats.cpu_usage) }}%
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label">内存使用率</label>
+                    <div class="progress">
+                        <div class="progress-bar bg-{{ 'danger' if stats.memory_usage > 80 else 'warning' if stats.memory_usage > 60 else 'info' }}" 
+                             role="progressbar" aria-valuenow="{{ stats.memory_usage }}" aria-valuemin="0" aria-valuemax="100"
+                             data-width="{{ stats.memory_usage }}">
+                            {{ "%.1f"|format(stats.memory_usage) }}%
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <label class="form-label">磁盘使用率</label>
+                    <div class="progress">
+                        <div class="progress-bar bg-{{ 'danger' if stats.disk_usage > 90 else 'warning' if stats.disk_usage > 70 else 'primary' }}" 
+                             role="progressbar" aria-valuenow="{{ stats.disk_usage }}" aria-valuemin="0" aria-valuemax="100"
+                             data-width="{{ stats.disk_usage }}">
+                            {{ "%.1f"|format(stats.disk_usage) }}%
+                        </div>
+                    </div>
+                </div>
+                
+                <hr>
+                
+                <div class="row text-center">
+                    <div class="col-12 mb-2">
+                        <small class="text-muted">平均排队时间</small>
+                        <div class="fw-bold">{{ "%.1f"|format(stats.avg_queue_time) }}s</div>
+                    </div>
+                    <div class="col-12">
+                        <small class="text-muted">平均执行时间</small>
+                        <div class="fw-bold">{{ "%.1f"|format(stats.avg_execution_time) }}s</div>
+                    </div>
+                </div>
+                
+                <div class="text-center mt-3">
+                    <small class="text-muted">
+                        更新时间: {{ stats.timestamp.strftime('%H:%M:%S') }}
+                    </small>
+                </div>
+                {% else %}
+                <div class="text-center text-muted py-4">
+                    <i class="fas fa-chart-line fa-3x mb-3"></i>
+                    <p>暂无统计数据</p>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Auto-refresh every 5 seconds
+setInterval(() => {
+    location.reload();
+}, 5000);
+</script>
+{% endblock %}
