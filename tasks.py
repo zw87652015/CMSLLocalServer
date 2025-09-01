@@ -115,8 +115,11 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                 '-outputfile', str(output_file_path)
             ]
             
-            # Create log file path
-            log_file_path = Config.LOGS_FOLDER / f"{task.unique_filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            # Create user-specific log file path
+            user_folder = task.user.get_user_folder()
+            user_logs_path = Config.LOGS_FOLDER / user_folder
+            user_logs_path.mkdir(parents=True, exist_ok=True)
+            log_file_path = user_logs_path / f"{task.unique_filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
             task.log_filename = log_file_path.name
             db.session.commit()
             

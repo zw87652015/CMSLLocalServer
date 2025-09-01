@@ -1,22 +1,53 @@
 from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import uuid
 
 db = SQLAlchemy()
 
-class User(db.Model):
+class User(UserMixin, db.Model):
     __tablename__ = 'users'
     
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    browser_fingerprint = db.Column(db.String(255), unique=True, nullable=False)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
+    is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_seen = db.Column(db.DateTime, default=datetime.utcnow)
     
     # Relationship to tasks
     tasks = db.relationship('Task', backref='user', lazy=True, cascade='all, delete-orphan')
     
+    def set_password(self, password):
+        """Set password hash"""
+        self.password_hash = generate_password_hash(password)
+    
+    def check_password(self, password):
+        """Check password against hash"""
+        return check_password_hash(self.password_hash, password)
+    
+    def get_user_folder(self):
+        """Get user-specific folder path"""
+        return f"user_{self.username}"
+    
+    def is_administrator(self):
+        """Check if user is admin"""
+        return self.is_admin
+    
+    def deactivate(self):
+        """Deactivate user account"""
+        self.is_active = False
+        db.session.commit()
+    
+    def activate(self):
+        """Activate user account"""
+        self.is_active = True
+        db.session.commit()
+    
     def __repr__(self):
-        return f'<User {self.id}>'
+        return f'<User {self.username}>'
 
 class Task(db.Model):
     __tablename__ = 'tasks'
@@ -191,7 +222,8 @@ class Task(db.Model):
         
         # Clean up log file
         if self.log_filename:
-            log_path = Config.LOGS_FOLDER / self.log_filename
+            user_folder = self.user.get_user_folder()
+            log_path = Config.LOGS_FOLDER / user_folder / self.log_filename
             if log_path.exists():
                 try:
                     os.remove(log_path)

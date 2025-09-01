@@ -30,7 +30,7 @@ class Config:
     ALLOWED_EXTENSIONS = {'mph'}
     
     # COMSOL configuration
-    COMSOL_EXECUTABLE = os.environ.get('COMSOL_EXECUTABLE') or r'D:\Program Files\COMSOL\COMSOL62\Multiphysics\bin\win64\comsolbatch.exe'
+    COMSOL_EXECUTABLE = os.environ.get('COMSOL_EXECUTABLE') or r'C:\Program Files\COMSOL\COMSOL63\Multiphysics\bin\win64\comsolbatch.exe'
     
     # Task queue configuration
     MAX_CONCURRENT_TASKS = int(os.environ.get('MAX_CONCURRENT_TASKS', 2))

@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- **用户管理**: 基于浏览器指纹的无密码用户识别
+- **用户管理**: 基于用户名/密码的身份验证系统，支持管理员权限
 - **文件上传**: 支持.mph文件上传和唯一文件名生成  
 - **任务队列**: 基于RabbitMQ和Celery的分布式任务处理
 - **实时监控**: 任务进度实时显示和状态更新
@@ -60,7 +60,11 @@ cp .env.example .env
 
 ### 3. 初始化数据库
 ```bash
+# 如果是全新安装
 python -c "from app import create_app; app = create_app(); app.app_context().push(); from models import db; db.create_all()"
+
+# 如果从旧版本升级，运行数据库迁移
+python migrate_db.py
 ```
 
 ## 运行系统
@@ -85,10 +89,28 @@ celery -A tasks worker --loglevel=info --queues=high_priority,normal_priority --
 celery -A tasks beat --loglevel=info
 ```
 
+### 4. 使用批处理脚本启动 (Windows)
+
+我们提供了一个批处理脚本 `start_system.bat` 用于在Windows上方便地启动系统。该脚本会自动检测并激活Conda环境（如果可用），然后启动Flask服务器和Celery worker。
+
+使用方法：
+1. 双击运行 `start_system.bat`
+2. 根据提示选择是否使用Conda环境（如果系统检测到Conda）
+3. 脚本将自动打开两个终端窗口分别运行Flask和Celery
+
+注意：使用前请确保已安装RabbitMQ并配置好环境变量。
+
 ## 使用说明
 
+### 用户注册和登录
+1. 首次使用需要注册账户（用户名/密码）
+2. 管理员账户会自动创建：
+   - 用户名：`admin`
+   - 密码：`admin123`（建议首次登录后修改）
+3. 普通用户可以通过注册页面创建账户
+
 ### 上传仿真文件
-1. 访问主页面
+1. 登录后访问主页面
 2. 选择.mph文件
 3. 设置任务优先级
 4. 点击"上传并开始仿真"
@@ -97,6 +119,7 @@ celery -A tasks beat --loglevel=info
 - **首页**: 查看个人任务和系统状态
 - **历史记录**: 查看完整任务历史
 - **队列状态**: 查看全局队列和系统资源
+- **管理员面板**: 管理员可以查看所有用户和任务
 
 ### 下载结果
 - 任务完成后，点击"下载"按钮获取结果文件
@@ -111,15 +134,25 @@ CMSLLocalServer/
 ├── models.py               # 数据库模型
 ├── config.py               # 配置文件
 ├── start_worker.py         # Celery Worker启动脚本
+├── start_system.bat        # Windows批处理脚本
 ├── requirements.txt        # Python依赖
 ├── .env                    # 环境变量
 ├── database.db             # SQLite数据库
 ├── uploads/                # 上传文件存储
+│   └── user_[username]/    # 用户专属上传目录
 ├── results/                # 结果文件存储 (.mph/.recovery/.status)
+│   └── user_[username]/    # 用户专属结果目录
 ├── logs/                   # 任务执行日志
+│   └── user_[username]/    # 用户专属日志目录
 ├── templates/              # HTML模板
+│   ├── admin/              # 管理员模板
+│   │   ├── dashboard.html
+│   │   ├── users.html
+│   │   └── tasks.html
 │   ├── base.html
 │   ├── index.html
+│   ├── login.html
+│   ├── register.html
 │   ├── history.html
 │   └── queue.html
 └── static/                 # 静态资源
@@ -130,11 +163,27 @@ CMSLLocalServer/
 
 ## API接口
 
+**注意**: 所有API接口都需要用户登录认证
+
+### 用户认证
+```
+POST /login
+Content-Type: application/x-www-form-urlencoded
+Body: username, password
+
+POST /register
+Content-Type: application/x-www-form-urlencoded
+Body: username, password, confirm_password
+
+POST /logout
+```
+
 ### 文件上传
 ```
 POST /upload
 Content-Type: multipart/form-data
 Body: file, priority
+Headers: Authentication required
 ```
 
 ### 获取任务列表
@@ -187,9 +236,14 @@ Response: JSON system statistics
    - 系统已增强错误检测，能识别COMSOL中文错误信息
    - 检查任务日志查看详细错误信息
 
+6. **日志文件找不到**
+   - 确保已从旧版本正确迁移到用户系统
+   - 日志现在存储在用户专属目录中：`logs/user_[username]/`
+   - 运行 `python migrate_db.py` 确保数据库架构正确
+
 ### 日志查看
 - 应用日志: Flask控制台输出
-- 任务日志: `logs/`目录下的文件
+- 任务日志: `logs/user_[username]/`目录下的文件
 - Celery日志: Worker控制台输出
 
 ## 扩展部署
