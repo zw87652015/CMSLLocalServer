@@ -26,11 +26,11 @@ celery.conf.update(
 celery.config_from_object('config.Config')
 
 class ProgressParser:
-    """Parse COMSOL progress output to extract percentage and current step"""
+    """Parse COMSOL® progress output to extract percentage and current step"""
     
     @staticmethod
     def parse_progress_line(line):
-        """Extract progress percentage and step from COMSOL output line"""
+        """Extract progress percentage and step from COMSOL® output line"""
         # Pattern for progress percentage: "当前进度: XX % - Step description"
         progress_pattern = r'当前进度:\s*(\d+)\s*%\s*-\s*(.+)'
         match = re.search(progress_pattern, line)
@@ -48,7 +48,7 @@ class ProgressParser:
     
     @staticmethod
     def parse_error(output):
-        """Extract error information from COMSOL output"""
+        """Extract error information from COMSOL® output"""
         error_patterns = [
             r'错误[:：]\s*(.+)',
             r'Error[:：]\s*(.+)',
@@ -62,13 +62,13 @@ class ProgressParser:
         for pattern in error_patterns:
             match = re.search(pattern, output, re.IGNORECASE)
             if match:
-                return match.group(1).strip() if match.groups() else "COMSOL simulation error detected"
+                return match.group(1).strip() if match.groups() else "COMSOL® simulation error detected"
         
         return None
     
     @staticmethod
     def has_error_markers(output):
-        """Check if output contains COMSOL error markers"""
+        """Check if output contains COMSOL® error markers"""
         error_markers = [
             r'/\*+错误\*+/',  # Error block markers
             '以下特征遇到问题',  # "The following features encountered problems"
@@ -85,7 +85,7 @@ class ProgressParser:
 @celery.task(bind=True)
 def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
     """
-    Execute COMSOL simulation task
+    Execute COMSOL® simulation task
     
     Args:
         task_id: Database task ID
@@ -108,7 +108,7 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             task.celery_task_id = self.request.id
             db.session.commit()
             
-            # Prepare COMSOL command
+            # Prepare COMSOL® command
             comsol_cmd = [
                 Config.COMSOL_EXECUTABLE,
                 '-inputfile', str(input_file_path),
@@ -123,7 +123,7 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             task.log_filename = log_file_path.name
             db.session.commit()
             
-            # Start COMSOL process
+            # Start COMSOL® process
             process = subprocess.Popen(
                 comsol_cmd,
                 stdout=subprocess.PIPE,
@@ -165,9 +165,9 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             full_output = '\n'.join(output_lines)
             
             if return_code == 0:
-                # Check for COMSOL errors even if return code is 0
+                # Check for COMSOL® errors even if return code is 0
                 if ProgressParser.has_error_markers(full_output):
-                    error_msg = ProgressParser.parse_error(full_output) or "COMSOL simulation completed with errors"
+                    error_msg = ProgressParser.parse_error(full_output) or "COMSOL® simulation completed with errors"
                     task.mark_failed(error_msg, full_output)
                     raise Exception(error_msg)
                 
@@ -182,12 +182,12 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                     }
                 else:
                     # Process succeeded but no output file
-                    error_msg = "COMSOL process completed but no output file was generated"
+                    error_msg = "COMSOL® process completed but no output file was generated"
                     task.mark_failed(error_msg, full_output)
                     raise Exception(error_msg)
             else:
                 # Process failed
-                error_msg = ProgressParser.parse_error(full_output) or f"COMSOL process failed with return code {return_code}"
+                error_msg = ProgressParser.parse_error(full_output) or f"COMSOL® process failed with return code {return_code}"
                 task.mark_failed(error_msg, full_output)
                 raise Exception(error_msg)
                 

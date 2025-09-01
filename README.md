@@ -1,6 +1,8 @@
-# COMSOL 分布式仿真任务管理系统
+# 分布式仿真任务管理系统
 
-一个基于Flask和Celery的局域网COMSOL仿真任务管理系统，支持文件上传、任务队列、实时监控和结果下载。
+一个基于Flask和Celery的局域网仿真任务管理系统，专为COMSOL® Multiphysics设计，支持文件上传、任务队列、实时监控和结果下载。
+
+**免责声明**: 本项目是独立开发的第三方工具，与COMSOL® AB公司无关。COMSOL®和COMSOL® Multiphysics是COMSOL® AB的注册商标。
 
 ## 功能特性
 
@@ -9,7 +11,7 @@
 - **任务队列**: 基于RabbitMQ和Celery的分布式任务处理
 - **实时监控**: 任务进度实时显示和状态更新
 - **优先级管理**: 支持普通和高优先级任务
-- **智能错误检测**: 检测COMSOL仿真错误并正确标记任务状态
+- **智能错误检测**: 检测COMSOL®仿真错误并正确标记任务状态
 - **完整文件管理**: 自动清理上传文件、结果文件(.mph/.recovery/.status)和日志
 - **历史记录**: 完整的任务历史和执行统计
 - **系统监控**: CPU、内存、磁盘使用率监控
@@ -20,7 +22,7 @@
 ### 软件依赖
 - Python 3.8+
 - RabbitMQ Server
-- COMSOL Multiphysics 6.2+ (在工作节点上)
+- COMSOL® Multiphysics 6.2+ (在工作节点上)
 
 ### Python包依赖
 ```bash
@@ -54,7 +56,7 @@ cp .env.example .env
 ```
 
 关键配置项：
-- `COMSOL_EXECUTABLE`: COMSOL批处理程序路径
+- `COMSOL_EXECUTABLE`: COMSOL®批处理程序路径
 - `CELERY_BROKER_URL`: RabbitMQ连接URL
 - `MAX_CONCURRENT_TASKS`: 最大并发任务数
 
@@ -222,8 +224,8 @@ Response: JSON system statistics
    - 检查RabbitMQ服务是否运行
    - 验证连接URL配置
 
-3. **COMSOL执行失败**
-   - 检查COMSOL路径配置
+3. **COMSOL®执行失败**
+   - 检查COMSOL®路径配置
    - 验证文件权限
    - 查看任务日志
 
@@ -233,7 +235,7 @@ Response: JSON system statistics
    - 检查磁盘空间
 
 5. **任务显示为成功但实际有错误**
-   - 系统已增强错误检测，能识别COMSOL中文错误信息
+   - 系统已增强错误检测，能识别COMSOL®中文错误信息
    - 检查任务日志查看详细错误信息
 
 6. **日志文件找不到**
@@ -249,7 +251,7 @@ Response: JSON system statistics
 ## 扩展部署
 
 ### 多机部署
-1. 在每台工作机器上安装COMSOL
+1. 在每台工作机器上安装COMSOL®
 2. 配置相同的RabbitMQ连接
 3. 启动Celery Worker
 4. Web服务器可以单独部署

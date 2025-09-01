@@ -29,7 +29,7 @@ class Config:
     MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB max file size
     ALLOWED_EXTENSIONS = {'mph'}
     
-    # COMSOL configuration
+    # COMSOL® configuration
     COMSOL_EXECUTABLE = os.environ.get('COMSOL_EXECUTABLE') or r'C:\Program Files\COMSOL\COMSOL63\Multiphysics\bin\win64\comsolbatch.exe'
     
     # Task queue configuration
