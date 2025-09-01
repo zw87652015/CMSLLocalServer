@@ -70,9 +70,9 @@ class ProgressParser:
     def has_error_markers(output):
         """Check if output contains COMSOL error markers"""
         error_markers = [
-            '/\*+错误\*+/',  # Error block markers
+            r'/\*+错误\*+/',  # Error block markers
             '以下特征遇到问题',  # "The following features encountered problems"
-            '未定义.*所需的材料属性',  # Material property errors
+            r'未定义.*所需的材料属性',  # Material property errors
             'ERROR',
             'FAILED'
         ]
