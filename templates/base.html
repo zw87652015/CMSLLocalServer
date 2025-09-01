@@ -43,15 +43,23 @@
                             </ul>
                         </div>
                     {% endif %}
-                    <span class="navbar-text me-3">
-                        <i class="fas fa-user me-1"></i>{{ current_user.username }}
-                        {% if current_user.is_administrator() %}
-                            <span class="badge bg-warning text-dark ms-1">管理员</span>
-                        {% endif %}
-                    </span>
-                    <a class="nav-link" href="{{ url_for('logout') }}">
-                        <i class="fas fa-sign-out-alt me-1"></i>退出
-                    </a>
+                    <div class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-user me-1"></i>{{ current_user.username }}
+                            {% if current_user.is_administrator() %}
+                                <span class="badge bg-warning text-dark ms-1">管理员</span>
+                            {% endif %}
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="{{ url_for('change_password') }}">
+                                <i class="fas fa-key me-1"></i>修改密码
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="{{ url_for('logout') }}">
+                                <i class="fas fa-sign-out-alt me-1"></i>退出
+                            </a></li>
+                        </ul>
+                    </div>
                 {% else %}
                     <a class="nav-link" href="{{ url_for('login') }}">
                         <i class="fas fa-sign-in-alt me-1"></i>登录

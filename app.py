@@ -7,7 +7,7 @@ from flask import Flask, request, render_template, jsonify, send_file, session, 
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 from models import db, User, Task, SystemStats
-from forms import LoginForm, RegistrationForm
+from forms import LoginForm, RegistrationForm, ChangePasswordForm
 from config import Config
 # Import moved to avoid circular import
 
@@ -490,6 +490,27 @@ def delete_task(task_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': f'Failed to delete task: {str(e)}'}), 500
+
+@app.route('/change_password', methods=['GET', 'POST'])
+@login_required
+def change_password():
+    """Change user password"""
+    form = ChangePasswordForm(current_user)
+    
+    if form.validate_on_submit():
+        try:
+            # Update password
+            current_user.set_password(form.new_password.data)
+            db.session.commit()
+            
+            flash('密码修改成功！', 'success')
+            return redirect(url_for('index'))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash(f'密码修改失败: {str(e)}', 'error')
+    
+    return render_template('change_password.html', form=form)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
