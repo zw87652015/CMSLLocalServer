@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+
+{% block title %}任务管理 - COMSOL 仿真管理系统{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h2><i class="fas fa-tasks me-2"></i>任务管理</h2>
+        <hr>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">所有任务</h5>
+                <span class="badge bg-primary">共 {{ tasks|length }} 个任务</span>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-hover table-sm">
+                        <thead>
+                            <tr>
+                                <th>任务ID</th>
+                                <th>用户</th>
+                                <th>文件名</th>
+                                <th>状态</th>
+                                <th>优先级</th>
+                                <th>进度</th>
+                                <th>创建时间</th>
+                                <th>执行时间</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for task in tasks %}
+                            <tr>
+                                <td>
+                                    <code>{{ task.id[:8] }}...</code>
+                                </td>
+                                <td>
+                                    <i class="fas fa-user me-1"></i>{{ task.user.username }}
+                                </td>
+                                <td>
+                                    <i class="fas fa-file me-1"></i>{{ task.original_filename }}
+                                </td>
+                                <td>
+                                    {% if task.status == 'pending' %}
+                                        <span class="badge bg-secondary">等待中</span>
+                                    {% elif task.status == 'queued' %}
+                                        <span class="badge bg-info">已排队</span>
+                                    {% elif task.status == 'running' %}
+                                        <span class="badge bg-warning">运行中</span>
+                                    {% elif task.status == 'completed' %}
+                                        <span class="badge bg-success">已完成</span>
+                                    {% elif task.status == 'failed' %}
+                                        <span class="badge bg-danger">失败</span>
+                                    {% elif task.status == 'cancelled' %}
+                                        <span class="badge bg-dark">已取消</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if task.priority == 'high' %}
+                                        <span class="badge bg-danger">高</span>
+                                    {% else %}
+                                        <span class="badge bg-secondary">普通</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <div class="progress" style="width: 80px; height: 20px;">
+                                        <div class="progress-bar" role="progressbar" 
+                                             style="width: {{ task.progress_percentage }}%"
+                                             aria-valuenow="{{ task.progress_percentage }}" 
+                                             aria-valuemin="0" aria-valuemax="100">
+                                            {{ "%.0f"|format(task.progress_percentage) }}%
+                                        </div>
+                                    </div>
+                                </td>
+                                <td>{{ task.created_at.strftime('%m-%d %H:%M') }}</td>
+                                <td>
+                                    {% if task.execution_time %}
+                                        {{ "%.1f"|format(task.execution_time) }}s
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="fas fa-chart-pie me-2"></i>任务状态统计</h6>
+            </div>
+            <div class="card-body">
+                {% set status_counts = {} %}
+                {% for task in tasks %}
+                    {% if status_counts.update({task.status: status_counts.get(task.status, 0) + 1}) %}{% endif %}
+                {% endfor %}
+                
+                <div class="row text-center">
+                    <div class="col-4">
+                        <h5 class="text-success">{{ status_counts.get('completed', 0) }}</h5>
+                        <small>已完成</small>
+                    </div>
+                    <div class="col-4">
+                        <h5 class="text-warning">{{ status_counts.get('running', 0) + status_counts.get('queued', 0) }}</h5>
+                        <small>进行中</small>
+                    </div>
+                    <div class="col-4">
+                        <h5 class="text-danger">{{ status_counts.get('failed', 0) }}</h5>
+                        <small>失败</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h6><i class="fas fa-info-circle me-2"></i>系统信息</h6>
+            </div>
+            <div class="card-body">
+                <p><strong>总任务数:</strong> {{ tasks|length }}</p>
+                <p><strong>活跃用户:</strong> {{ tasks|map(attribute='user')|unique|list|length }}</p>
+                <p><strong>平均执行时间:</strong> 
+                    {% set completed_tasks = tasks|selectattr('execution_time')|list %}
+                    {% if completed_tasks %}
+                        {{ "%.1f"|format(completed_tasks|map(attribute='execution_time')|sum / completed_tasks|length) }}s
+                    {% else %}
+                        暂无数据
+                    {% endif %}
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
