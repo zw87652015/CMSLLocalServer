@@ -76,6 +76,7 @@ class Task(db.Model):
     
     # Execution details
     celery_task_id = db.Column(db.String(255))
+    process_id = db.Column(db.Integer)  # COMSOL process ID for cancellation
     execution_time = db.Column(db.Float)  # in seconds
     queue_time = db.Column(db.Float)  # in seconds
     
@@ -155,17 +156,20 @@ class Task(db.Model):
         import os
         from pathlib import Path
         
-        # Clean up upload file
-        upload_path = Config.UPLOAD_FOLDER / self.unique_filename
-        if upload_path.exists():
-            try:
-                os.remove(upload_path)
-            except Exception:
-                pass
+        # Clean up upload file (stored in user-specific folder)
+        if self.unique_filename:
+            user_folder = self.user.get_user_folder()
+            upload_path = Config.UPLOAD_FOLDER / user_folder / self.unique_filename
+            if upload_path.exists():
+                try:
+                    os.remove(upload_path)
+                except Exception:
+                    pass
         
         # Clean up result file and its related files (.mph.recovery, .mph.status)
         if self.result_filename:
-            result_path = Config.RESULTS_FOLDER / self.result_filename
+            user_folder = self.user.get_user_folder()
+            result_path = Config.RESULTS_FOLDER / user_folder / self.result_filename
             
             # Remove main result file
             if result_path.exists():
@@ -193,9 +197,10 @@ class Task(db.Model):
         # Also check for result files based on unique_filename pattern (for failed tasks)
         # Pattern: {unique_filename_stem}_solved.mph
         if self.unique_filename:
+            user_folder = self.user.get_user_folder()
             unique_stem = Path(self.unique_filename).stem
             result_pattern = f"{unique_stem}_solved.mph"
-            result_path = Config.RESULTS_FOLDER / result_pattern
+            result_path = Config.RESULTS_FOLDER / user_folder / result_pattern
             
             # Remove main result file
             if result_path.exists():

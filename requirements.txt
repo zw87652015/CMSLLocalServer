@@ -18,6 +18,7 @@ WTForms==3.1.0
 
 # Progress monitoring and logging
 psutil==5.9.6
+chardet==5.2.0
 
 # Security
 bcrypt==4.1.2

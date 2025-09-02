@@ -1,5 +1,7 @@
 # 分布式仿真任务管理系统
 
+[English](README_EN.md) | [中文](README.md)
+
 一个基于Flask和Celery的局域网仿真任务管理系统，专为COMSOL® Multiphysics设计，支持文件上传、任务队列、实时监控和结果下载。
 
 **免责声明**: 本项目是独立开发的第三方工具，与COMSOL® AB公司无关。COMSOL®和COMSOL® Multiphysics是COMSOL® AB的注册商标。

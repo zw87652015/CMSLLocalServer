@@ -1,7 +1,7 @@
 import os
 import re
 import subprocess
-import time
+import os
 from datetime import datetime
 from pathlib import Path
 from celery.app import Celery
@@ -123,14 +123,23 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             task.log_filename = log_file_path.name
             db.session.commit()
             
-            # Start COMSOL® process
+            # Start COMSOL® process with proper encoding for Chinese characters on Windows
+            import locale
+            system_encoding = locale.getpreferredencoding()
+            # Use system encoding (usually GBK on Chinese Windows) for COMSOL output
             process = subprocess.Popen(
                 comsol_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 universal_newlines=True,
-                bufsize=1
+                bufsize=1,
+                encoding=system_encoding,
+                errors='replace'
             )
+            
+            # Store process ID in task for cancellation
+            task.process_id = process.pid
+            db.session.commit()
             
             # Monitor progress
             output_lines = []
@@ -174,6 +183,11 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                 # Success - no errors detected
                 if os.path.exists(output_file_path):
                     task.mark_completed(Path(output_file_path).name)
+                    # Update system statistics after task completion
+                    try:
+                        update_system_stats.delay()
+                    except:
+                        pass  # Don't fail the main task if stats update fails
                     return {
                         'status': 'completed',
                         'result_file': str(output_file_path),
@@ -189,6 +203,11 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                 # Process failed
                 error_msg = ProgressParser.parse_error(full_output) or f"COMSOL® process failed with return code {return_code}"
                 task.mark_failed(error_msg, full_output)
+                # Update system statistics after task failure
+                try:
+                    update_system_stats.delay()
+                except:
+                    pass  # Don't fail the main task if stats update fails
                 raise Exception(error_msg)
                 
         except Exception as e:
@@ -226,6 +245,73 @@ def cleanup_old_files():
                         print(f"Failed to delete {file_path}: {e}")
 
 @celery.task
+def kill_comsol_process(process_id):
+    """Kill a COMSOL process by PID"""
+    import psutil
+    
+    try:
+        if process_id:
+            # Kill the process and all its children
+            parent = psutil.Process(process_id)
+            children = parent.children(recursive=True)
+            
+            # Kill children first
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            
+            # Kill parent process
+            try:
+                parent.kill()
+                return f"Successfully killed COMSOL process {process_id}"
+            except psutil.NoSuchProcess:
+                return f"Process {process_id} not found (may have already terminated)"
+                
+    except Exception as e:
+        return f"Failed to kill process {process_id}: {str(e)}"
+
+@celery.task
+def process_next_queued_task():
+    """Process the next queued task after a cancellation"""
+    from app import create_app
+    app = create_app()
+    
+    with app.app_context():
+        # Find the next pending task
+        next_task = Task.query.filter(
+            Task.status.in_(['pending', 'queued'])
+        ).order_by(Task.created_at).first()
+        
+        if next_task:
+            # Start the next task
+            input_file_path = Config.UPLOAD_FOLDER / next_task.user.get_user_folder() / next_task.unique_filename
+            
+            # Generate output filename
+            stem = Path(next_task.unique_filename).stem
+            output_filename = f"{stem}_solved.mph"
+            output_file_path = Config.RESULTS_FOLDER / next_task.user.get_user_folder() / output_filename
+            
+            # Ensure results directory exists
+            output_file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Submit the task to Celery
+            celery_task = run_comsol_simulation.delay(
+                next_task.id,
+                str(input_file_path),
+                str(output_file_path)
+            )
+            
+            # Update task with Celery task ID
+            next_task.celery_task_id = celery_task.id
+            db.session.commit()
+            
+            return f"Started next queued task: {next_task.id}"
+        
+        return "No queued tasks to process"
+
+@celery.task
 def update_system_stats():
     """Update system statistics"""
     import psutil
@@ -240,18 +326,20 @@ def update_system_stats():
         today = datetime.now().date()
         completed_today = Task.query.filter(
             Task.status == 'completed',
-            Task.completed_at >= today
+            db.func.date(Task.completed_at) == today
         ).count()
         
         failed_today = Task.query.filter(
             Task.status == 'failed',
-            Task.completed_at >= today
+            db.func.date(Task.completed_at) == today
         ).count()
         
         # Get system resource usage
         cpu_usage = psutil.cpu_percent()
         memory_usage = psutil.virtual_memory().percent
-        disk_usage = psutil.disk_usage('/').percent
+        # Use C:\ for Windows, / for Unix
+        disk_path = 'C:\\' if os.name == 'nt' else '/'
+        disk_usage = psutil.disk_usage(disk_path).percent
         
         # Calculate average times
         recent_tasks = Task.query.filter(

@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 
-{% block title %}管理控制台 - COMSOL 仿真管理系统{% endblock %}
+{% block title %}{{ g.get_text('admin_dashboard') }} - {{ g.get_text('title') }}{% endblock %}
 
 {% block content %}
 <div class="row">
     <div class="col-12">
-        <h2><i class="fas fa-tachometer-alt me-2"></i>管理控制台</h2>
+        <h2><i class="fas fa-tachometer-alt me-2"></i>{{ g.get_text('admin_dashboard') }}</h2>
         <hr>
     </div>
 </div>
@@ -17,7 +17,7 @@
                 <div class="d-flex justify-content-between">
                     <div>
                         <h4>{{ users|length }}</h4>
-                        <p class="mb-0">总用户数</p>
+                        <p class="mb-0">{{ g.get_text('total_users') }}</p>
                     </div>
                     <div class="align-self-center">
                         <i class="fas fa-users fa-2x"></i>
@@ -33,7 +33,7 @@
                 <div class="d-flex justify-content-between">
                     <div>
                         <h4>{{ total_tasks }}</h4>
-                        <p class="mb-0">总任务数</p>
+                        <p class="mb-0">{{ g.get_text('total_tasks') }}</p>
                     </div>
                     <div class="align-self-center">
                         <i class="fas fa-tasks fa-2x"></i>
@@ -49,7 +49,7 @@
                 <div class="d-flex justify-content-between">
                     <div>
                         <h4>{{ active_tasks }}</h4>
-                        <p class="mb-0">活跃任务</p>
+                        <p class="mb-0">{{ g.get_text('active_tasks') }}</p>
                     </div>
                     <div class="align-self-center">
                         <i class="fas fa-spinner fa-2x"></i>
@@ -65,7 +65,7 @@
                 <div class="d-flex justify-content-between">
                     <div>
                         <h4>{{ users|selectattr('is_active')|list|length }}</h4>
-                        <p class="mb-0">活跃用户</p>
+                        <p class="mb-0">{{ g.get_text('active_users') }}</p>
                     </div>
                     <div class="align-self-center">
                         <i class="fas fa-user-check fa-2x"></i>
@@ -80,16 +80,16 @@
     <div class="col-md-6">
         <div class="card">
             <div class="card-header">
-                <h5><i class="fas fa-users me-2"></i>最近注册用户</h5>
+                <h5><i class="fas fa-users me-2"></i>{{ g.get_text('recent_registered_users') }}</h5>
             </div>
             <div class="card-body">
                 <div class="table-responsive">
                     <table class="table table-sm">
                         <thead>
                             <tr>
-                                <th>用户名</th>
-                                <th>注册时间</th>
-                                <th>状态</th>
+                                <th>{{ g.get_text('username') }}</th>
+                                <th>{{ g.get_text('registration_time') }}</th>
+                                <th>{{ g.get_text('status') }}</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -98,15 +98,15 @@
                                 <td>
                                     {{ user.username }}
                                     {% if user.is_admin %}
-                                        <span class="badge bg-warning text-dark">管理员</span>
+                                        <span class="badge bg-warning text-dark">{{ g.get_text('administrator') }}</span>
                                     {% endif %}
                                 </td>
                                 <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
                                 <td>
                                     {% if user.is_active %}
-                                        <span class="badge bg-success">活跃</span>
+                                        <span class="badge bg-success">{{ g.get_text('active') }}</span>
                                     {% else %}
-                                        <span class="badge bg-secondary">禁用</span>
+                                        <span class="badge bg-secondary">{{ g.get_text('disabled') }}</span>
                                     {% endif %}
                                 </td>
                             </tr>
@@ -121,18 +121,18 @@
     <div class="col-md-6">
         <div class="card">
             <div class="card-header">
-                <h5><i class="fas fa-cogs me-2"></i>快速操作</h5>
+                <h5><i class="fas fa-cogs me-2"></i>{{ g.get_text('quick_actions') }}</h5>
             </div>
             <div class="card-body">
                 <div class="d-grid gap-2">
                     <a href="{{ url_for('admin_users') }}" class="btn btn-outline-primary">
-                        <i class="fas fa-users me-2"></i>管理用户
+                        <i class="fas fa-users me-2"></i>{{ g.get_text('manage_users') }}
                     </a>
                     <a href="{{ url_for('admin_tasks') }}" class="btn btn-outline-success">
-                        <i class="fas fa-tasks me-2"></i>管理任务
+                        <i class="fas fa-tasks me-2"></i>{{ g.get_text('manage_tasks') }}
                     </a>
                     <a href="{{ url_for('queue_status') }}" class="btn btn-outline-info">
-                        <i class="fas fa-list me-2"></i>查看队列
+                        <i class="fas fa-list me-2"></i>{{ g.get_text('view_queue') }}
                     </a>
                 </div>
             </div>
