@@ -63,6 +63,7 @@ class Task(db.Model):
     # Task status and timing
     status = db.Column(db.String(50), default='pending')  # pending, queued, running, completed, failed
     priority = db.Column(db.String(20), default='normal')  # normal, high
+    comsol_version = db.Column(db.String(10), default='6.3')  # COMSOL version (6.2, 6.3, etc.)
     
     # Timestamps
     created_at = db.Column(db.DateTime, default=datetime.utcnow)

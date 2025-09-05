@@ -17,6 +17,16 @@
                         <div class="form-text">{{ g.get_text('only_mph_format') }}</div>
                     </div>
                     <div class="mb-3">
+                        <label for="comsol_version" class="form-label">COMSOL {{ g.get_text('version') }}</label>
+                        <select class="form-select" id="comsol_version" name="comsol_version">
+                            {% for version, info in g.config.COMSOL_VERSIONS.items() %}
+                            <option value="{{ version }}" {% if version == g.config.DEFAULT_COMSOL_VERSION %}selected{% endif %}>
+                                {{ info.name }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="mb-3">
                         <label for="priority" class="form-label">{{ g.get_text('task_priority') }}</label>
                         <select class="form-select" id="priority" name="priority">
                             <option value="normal">{{ g.get_text('normal_priority') }}</option>

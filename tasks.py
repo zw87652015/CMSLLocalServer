@@ -108,9 +108,14 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             task.celery_task_id = self.request.id
             db.session.commit()
             
+            # Get COMSOL executable based on task version
+            comsol_executable = Config.COMSOL_VERSIONS.get(task.comsol_version, {}).get('executable')
+            if not comsol_executable:
+                raise Exception(f"COMSOL version {task.comsol_version} not configured")
+            
             # Prepare COMSOL® command
             comsol_cmd = [
-                Config.COMSOL_EXECUTABLE,
+                comsol_executable,
                 '-inputfile', str(input_file_path),
                 '-outputfile', str(output_file_path)
             ]

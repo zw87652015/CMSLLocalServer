@@ -95,6 +95,7 @@ TRANSLATIONS = {
         'language': '语言',
         'chinese': '中文',
         'english': 'English',
+        'version': '版本',
         
         # Main page content
         'upload_simulation_file': '上传仿真文件',
@@ -280,6 +281,7 @@ TRANSLATIONS = {
         'language': 'Language',
         'chinese': '中文',
         'english': 'English',
+        'version': 'Version',
         
         # Main page content
         'upload_simulation_file': 'Upload Simulation File',
@@ -466,6 +468,7 @@ def before_request():
     """Set up language context before each request"""
     g.language = get_language()
     g.get_text = get_text
+    g.config = Config
 
 @app.route('/set_language/<language>')
 def set_language(language):
@@ -671,8 +674,13 @@ def upload_file():
         upload_path = user_upload_path / unique_filename
         file.save(upload_path)
         
-        # Get priority from form
+        # Get priority and COMSOL version from form
         priority = request.form.get('priority', 'normal')
+        comsol_version = request.form.get('comsol_version', Config.DEFAULT_COMSOL_VERSION)
+        
+        # Validate COMSOL version
+        if comsol_version not in Config.COMSOL_VERSIONS:
+            return jsonify({'error': 'Invalid COMSOL version selected'}), 400
         
         # Create task record
         task = Task(
@@ -680,7 +688,8 @@ def upload_file():
             original_filename=original_filename,
             unique_filename=unique_filename,
             file_size=upload_path.stat().st_size,
-            priority=priority
+            priority=priority,
+            comsol_version=comsol_version
         )
         db.session.add(task)
         db.session.commit()
@@ -722,6 +731,7 @@ def get_tasks():
             'original_filename': task.original_filename,
             'status': task.status,
             'priority': task.priority,
+            'comsol_version': task.comsol_version,
             'progress': task.progress_percentage,
             'current_step': task.current_step,
             'created_at': task.created_at.isoformat(),
@@ -839,8 +849,20 @@ def queue_status():
                 Task.execution_time.isnot(None)
             ).all()
             
-            self.avg_queue_time = sum(t.queue_time for t in recent_tasks if t.queue_time) / len(recent_tasks) if recent_tasks else 0
-            self.avg_execution_time = sum(t.execution_time for t in recent_tasks) / len(recent_tasks) if recent_tasks else 0
+            # Safe average calculations
+            self.avg_queue_time = 0
+            self.avg_execution_time = 0
+            
+            if recent_tasks:
+                # Filter out None values for queue_time
+                valid_queue_times = [t.queue_time for t in recent_tasks if t.queue_time is not None]
+                if valid_queue_times:
+                    self.avg_queue_time = sum(valid_queue_times) / len(valid_queue_times)
+                
+                # Filter out None values for execution_time
+                valid_exec_times = [t.execution_time for t in recent_tasks if t.execution_time is not None]
+                if valid_exec_times:
+                    self.avg_execution_time = sum(valid_exec_times) / len(valid_exec_times)
             self.timestamp = datetime.now()
     
     stats = RealTimeStats()
@@ -889,8 +911,20 @@ def api_stats():
         Task.execution_time.isnot(None)
     ).all()
     
-    avg_queue_time = sum(t.queue_time for t in recent_tasks if t.queue_time) / len(recent_tasks) if recent_tasks else 0
-    avg_execution_time = sum(t.execution_time for t in recent_tasks) / len(recent_tasks) if recent_tasks else 0
+    # Safe average calculations
+    avg_queue_time = 0
+    avg_execution_time = 0
+    
+    if recent_tasks:
+        # Filter out None values for queue_time
+        valid_queue_times = [t.queue_time for t in recent_tasks if t.queue_time is not None]
+        if valid_queue_times:
+            avg_queue_time = sum(valid_queue_times) / len(valid_queue_times)
+        
+        # Filter out None values for execution_time
+        valid_exec_times = [t.execution_time for t in recent_tasks if t.execution_time is not None]
+        if valid_exec_times:
+            avg_execution_time = sum(valid_exec_times) / len(valid_exec_times)
     
     return jsonify({
         'pending_tasks': pending_tasks,

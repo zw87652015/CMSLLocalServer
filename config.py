@@ -6,7 +6,7 @@ class Config:
     BASE_DIR = Path(__file__).parent.absolute()
     
     # Flask configuration
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
+    SECRET_KEY = os.environ.get('SECRET_KEY')
     
     # Database configuration
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{BASE_DIR / 'database.db'}"
@@ -30,7 +30,22 @@ class Config:
     ALLOWED_EXTENSIONS = {'mph'}
     
     # COMSOL® configuration
-    COMSOL_EXECUTABLE = os.environ.get('COMSOL_EXECUTABLE') or r'C:\Program Files\COMSOL\COMSOL63\Multiphysics\bin\win64\comsolbatch.exe'
+    COMSOL_VERSIONS = {
+        '6.3': {
+            'name': '6.3',
+            'executable': os.environ.get('COMSOL_63_EXECUTABLE') or r'C:\Program Files\COMSOL\COMSOL63\Multiphysics\bin\win64\comsolbatch.exe'
+        },
+        '6.2': {
+            'name': '6.2',
+            'executable': os.environ.get('COMSOL_62_EXECUTABLE') or r'C:\Program Files\COMSOL\COMSOL62\Multiphysics\bin\win64\comsolbatch.exe'
+        }
+    }
+    
+    # Default COMSOL version
+    DEFAULT_COMSOL_VERSION = '6.3'
+    
+    # Legacy support - keep for backward compatibility
+    COMSOL_EXECUTABLE = COMSOL_VERSIONS[DEFAULT_COMSOL_VERSION]['executable']
     
     # Task queue configuration
     MAX_CONCURRENT_TASKS = int(os.environ.get('MAX_CONCURRENT_TASKS', 2))

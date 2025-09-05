@@ -1,7 +1,8 @@
 from flask_wtf import FlaskForm
-from wtforms import StringField, PasswordField, SubmitField
+from wtforms import StringField, PasswordField, SubmitField, SelectField
 from wtforms.validators import DataRequired, Length, ValidationError, EqualTo
 from models import User
+from config import Config
 
 class LoginForm(FlaskForm):
     username = StringField('用户名', validators=[DataRequired(), Length(min=3, max=20)])
@@ -34,3 +35,13 @@ class ChangePasswordForm(FlaskForm):
     def validate_current_password(self, current_password):
         if not self.user.check_password(current_password.data):
             raise ValidationError('当前密码不正确。')
+
+class UploadForm(FlaskForm):
+    comsol_version = SelectField('COMSOL版本', 
+                                choices=[(version, info['name']) for version, info in Config.COMSOL_VERSIONS.items()],
+                                default=Config.DEFAULT_COMSOL_VERSION,
+                                validators=[DataRequired()])
+    priority = SelectField('任务优先级',
+                          choices=[('normal', '普通优先级'), ('high', '高优先级')],
+                          default='normal',
+                          validators=[DataRequired()])
