@@ -1485,6 +1485,32 @@ def node_task_fail(task_id):
     return jsonify({'ok': True}), 200
 
 
+@app.route('/api/nodes/task/<task_id>/upload_log', methods=['POST'])
+def node_upload_log(task_id):
+    """Node uploads (partial) log text for any terminal task state.
+
+    Called after abort/cancel so partial output is preserved even when the
+    normal complete/fail path is skipped.  Safe to call for completed, failed,
+    and cancelled tasks alike.
+    """
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Accept any task still assigned to this node regardless of status
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data     = request.get_json(silent=True) or {}
+    log_text = data.get('log_text', '')
+    if log_text:
+        _save_node_log(task, log_text)
+        db.session.commit()
+
+    return jsonify({'ok': True}), 200
+
+
 @app.route('/api/nodes/list')
 @login_required
 @admin_required

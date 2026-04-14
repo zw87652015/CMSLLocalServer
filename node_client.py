@@ -389,6 +389,15 @@ class NodeClient:
 
         if aborted:
             logger.info('Task %s aborted.', task_id)
+            # Upload whatever output was captured before the kill
+            partial_log = '\n'.join(output_lines)
+            if partial_log:
+                try:
+                    self._post(f'/api/nodes/task/{task_id}/upload_log',
+                               json={'log_text': partial_log[-2_000_000:]})
+                    logger.info('Partial log uploaded for aborted task %s.', task_id)
+                except Exception as exc:
+                    logger.warning('Could not upload partial log: %s', exc)
             for p in (input_path, output_path):
                 try:
                     if p.exists():
