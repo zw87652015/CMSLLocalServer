@@ -29,25 +29,37 @@ import locale
 import logging
 import multiprocessing
 import os
+import queue
 import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import requests
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — a queue handler lets the GUI receive log records safely
 # ---------------------------------------------------------------------------
+_log_queue: queue.Queue = queue.Queue()
+
+
+class _QueueHandler(logging.Handler):
+    def emit(self, record):
+        _log_queue.put(self.format(record))
+
+
+_root_handler = _QueueHandler()
+_root_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(message)s',
+                                              datefmt='%H:%M:%S'))
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)],
 )
+logging.getLogger().addHandler(_root_handler)
 logger = logging.getLogger('node_client')
 
 # ---------------------------------------------------------------------------
@@ -407,35 +419,289 @@ class NodeClient:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# GUI
+# ---------------------------------------------------------------------------
+COMSOL_VERSIONS = ['6.3', '6.2']
+
+
+def _normalise_url(url: str) -> str:
+    """Strip trailing slash and fix accidental double-scheme like http://http://…"""
+    url = url.strip()
+    for scheme in ('https://', 'http://'):
+        while url.lower().startswith(scheme + scheme[:-2]):
+            url = scheme + url[len(scheme):]
+    return url.rstrip('/')
+
+
+class NodeClientGUI:
+    def __init__(self, root):
+        import tkinter as tk
+        from tkinter import ttk, filedialog, scrolledtext
+
+        self._tk           = tk
+        self._filedialog   = filedialog
+        self.root          = root
+        self._client       = None
+        self._worker       = None
+        self._stop_event   = threading.Event()
+
+        root.title('CMSL Node Client')
+        root.resizable(False, False)
+
+        # ── load persisted settings ──────────────────────────────────────
+        cfg = load_config()
+
+        # ── layout ───────────────────────────────────────────────────────
+        pad = dict(padx=10, pady=4)
+
+        # -- Server URL --
+        frm_srv = ttk.LabelFrame(root, text='Server')
+        frm_srv.pack(fill='x', **pad)
+
+        ttk.Label(frm_srv, text='URL:').grid(row=0, column=0, sticky='w', padx=6, pady=6)
+        self._server_var = tk.StringVar(value=cfg.get('server_url', 'http://'))
+        ttk.Entry(frm_srv, textvariable=self._server_var, width=42).grid(
+            row=0, column=1, padx=6, pady=6, sticky='ew')
+        frm_srv.columnconfigure(1, weight=1)
+
+        # -- COMSOL paths --
+        frm_comsol = ttk.LabelFrame(root, text='COMSOL Executables')
+        frm_comsol.pack(fill='x', **pad)
+
+        self._comsol_vars    = {}
+        self._comsol_status  = {}
+        saved_paths = cfg.get('comsol_paths', {})
+
+        for row_i, ver in enumerate(COMSOL_VERSIONS):
+            default_path = saved_paths.get(ver, DEFAULT_COMSOL_PATHS.get(ver, ''))
+            var = tk.StringVar(value=default_path)
+            self._comsol_vars[ver] = var
+
+            ttk.Label(frm_comsol, text=f'v{ver}:').grid(
+                row=row_i, column=0, sticky='w', padx=6, pady=4)
+
+            entry = ttk.Entry(frm_comsol, textvariable=var, width=36)
+            entry.grid(row=row_i, column=1, padx=4, pady=4, sticky='ew')
+            var.trace_add('write', lambda *_, v=ver: self._refresh_exe_status(v))
+
+            ttk.Button(frm_comsol, text='Browse…',
+                       command=lambda v=ver: self._browse_comsol(v)).grid(
+                row=row_i, column=2, padx=4)
+
+            status_lbl = ttk.Label(frm_comsol, text='', width=2)
+            status_lbl.grid(row=row_i, column=3, padx=(0, 6))
+            self._comsol_status[ver] = status_lbl
+
+            self._refresh_exe_status(ver)
+
+        frm_comsol.columnconfigure(1, weight=1)
+
+        # -- Status bar --
+        frm_status = ttk.Frame(root)
+        frm_status.pack(fill='x', padx=10, pady=(6, 2))
+
+        self._status_lbl = ttk.Label(frm_status, text='● Stopped', foreground='gray')
+        self._status_lbl.pack(side='left')
+
+        self._node_lbl = ttk.Label(frm_status, text='', foreground='#555')
+        self._node_lbl.pack(side='left', padx=10)
+
+        # -- Buttons --
+        frm_btn = ttk.Frame(root)
+        frm_btn.pack(fill='x', padx=10, pady=4)
+
+        self._btn_start = ttk.Button(frm_btn, text='Start', command=self._start)
+        self._btn_start.pack(side='left', padx=(0, 6))
+
+        self._btn_stop = ttk.Button(frm_btn, text='Stop', command=self._stop,
+                                    state='disabled')
+        self._btn_stop.pack(side='left')
+
+        # -- Log area --
+        frm_log = ttk.LabelFrame(root, text='Log')
+        frm_log.pack(fill='both', expand=True, padx=10, pady=(4, 10))
+
+        self._log_text = scrolledtext.ScrolledText(
+            frm_log, width=70, height=18, state='disabled',
+            font=('Consolas', 9), wrap='word',
+            background='#1e1e1e', foreground='#d4d4d4',
+            insertbackground='white',
+        )
+        self._log_text.pack(fill='both', expand=True, padx=4, pady=4)
+        # colour tags
+        self._log_text.tag_config('warn',  foreground='#e5c07b')
+        self._log_text.tag_config('error', foreground='#e06c75')
+        self._log_text.tag_config('info',  foreground='#98c379')
+
+        # -- poll log queue --
+        self._poll_log()
+
+        root.protocol('WM_DELETE_WINDOW', self._on_close)
+
+    # ── helpers ─────────────────────────────────────────────────────────────
+
+    def _refresh_exe_status(self, ver):
+        path = self._comsol_vars[ver].get().strip()
+        exists = path and Path(path).exists()
+        lbl = self._comsol_status[ver]
+        lbl.config(text='✔' if exists else '✘',
+                   foreground='#4caf50' if exists else '#e57373')
+
+    def _browse_comsol(self, ver):
+        path = self._filedialog.askopenfilename(
+            title=f'Select comsolbatch.exe for COMSOL {ver}',
+            filetypes=[('Executable', '*.exe'), ('All files', '*.*')],
+            initialdir=Path(self._comsol_vars[ver].get()).parent
+                       if self._comsol_vars[ver].get() else 'C:\\',
+        )
+        if path:
+            self._comsol_vars[ver].set(path)
+
+    def _append_log(self, text: str):
+        self._log_text.config(state='normal')
+        tag = 'error' if '[ERROR]' in text else 'warn' if '[WARNING]' in text else 'info'
+        self._log_text.insert('end', text + '\n', tag)
+        self._log_text.see('end')
+        self._log_text.config(state='disabled')
+
+    def _poll_log(self):
+        try:
+            while True:
+                msg = _log_queue.get_nowait()
+                self._append_log(msg)
+        except queue.Empty:
+            pass
+        self.root.after(200, self._poll_log)
+
+    def _save_settings(self):
+        cfg = load_config()
+        cfg['server_url']   = _normalise_url(self._server_var.get())
+        cfg['comsol_paths'] = {v: self._comsol_vars[v].get().strip()
+                               for v in COMSOL_VERSIONS}
+        save_config(cfg)
+
+    # ── start / stop ────────────────────────────────────────────────────────
+
+    def _start(self):
+        server_url = _normalise_url(self._server_var.get())
+        if not server_url or server_url in ('http://', 'https://'):
+            self._append_log('[ERROR] Please enter a valid server URL.')
+            return
+
+        self._save_settings()
+
+        comsol_paths = {v: self._comsol_vars[v].get().strip()
+                        for v in COMSOL_VERSIONS
+                        if self._comsol_vars[v].get().strip()}
+
+        self._stop_event.clear()
+        self._client = NodeClient(server_url=server_url,
+                                  comsol_paths=comsol_paths)
+
+        self._worker = threading.Thread(
+            target=self._run_client, daemon=True, name='node-client')
+        self._worker.start()
+
+        self._btn_start.config(state='disabled')
+        self._btn_stop.config(state='normal')
+        self._status_lbl.config(text='● Running', foreground='#4caf50')
+
+    def _run_client(self):
+        """Runs NodeClient.run() on the worker thread; patches its loop to
+        honour _stop_event so Stop works cleanly."""
+        client = self._client
+        cfg    = load_config()
+
+        # Restore saved credentials when server URL matches
+        if cfg.get('server_url') == client.server_url and cfg.get('node_id'):
+            client.node_id    = cfg['node_id']
+            client.auth_token = cfg['auth_token']
+            logger.info('Loaded saved credentials. node_id=%s', client.node_id)
+        else:
+            try:
+                client.register()
+            except Exception as exc:
+                logger.error('Registration failed: %s', exc)
+                self.root.after(0, self._on_worker_stopped)
+                return
+            save_config({
+                **cfg,
+                'server_url': client.server_url,
+                'node_id':    client.node_id,
+                'auth_token': client.auth_token,
+            })
+
+        # Update node label in UI
+        self.root.after(0, lambda: self._node_lbl.config(
+            text=f'node_id: {client.node_id[:8]}…'))
+
+        client.heartbeat()
+        logger.info('Node client running. Polling every %d s …', POLL_INTERVAL)
+
+        while not self._stop_event.is_set():
+            try:
+                client._maybe_heartbeat()
+                task = client.poll_task()
+                if task:
+                    client.execute_task(task)
+                    client.heartbeat('online')
+                else:
+                    self._stop_event.wait(POLL_INTERVAL)
+            except Exception as exc:
+                logger.error('Unexpected error: %s', exc, exc_info=True)
+                self._stop_event.wait(POLL_INTERVAL)
+
+        logger.info('Node client stopped.')
+        self.root.after(0, self._on_worker_stopped)
+
+    def _stop(self):
+        self._stop_event.set()
+        self._btn_stop.config(state='disabled')
+        self._status_lbl.config(text='● Stopping…', foreground='#e5c07b')
+
+    def _on_worker_stopped(self):
+        self._btn_start.config(state='normal')
+        self._btn_stop.config(state='disabled')
+        self._status_lbl.config(text='● Stopped', foreground='gray')
+        self._node_lbl.config(text='')
+
+    def _on_close(self):
+        self._stop_event.set()
+        self.root.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Entry point — GUI by default, headless if --server is passed
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(
-        description='CMSL Node Client — run on each compute node.'
-    )
-    parser.add_argument(
-        '--server', required=True,
-        help='Base URL of the main server, e.g. http://192.168.1.10:5000'
-    )
-    parser.add_argument(
-        '--comsol-63',
-        default=DEFAULT_COMSOL_PATHS.get('6.3'),
-        help='Path to comsolbatch.exe for COMSOL 6.3'
-    )
-    parser.add_argument(
-        '--comsol-62',
-        default=DEFAULT_COMSOL_PATHS.get('6.2'),
-        help='Path to comsolbatch.exe for COMSOL 6.2'
-    )
-    args = parser.parse_args()
+    # Headless / CLI mode when --server is explicitly provided
+    if '--server' in sys.argv:
+        parser = argparse.ArgumentParser(
+            description='CMSL Node Client — run on each compute node.'
+        )
+        parser.add_argument('--server', required=True,
+                            help='Base URL of the main server')
+        parser.add_argument('--comsol-63', default=DEFAULT_COMSOL_PATHS.get('6.3'))
+        parser.add_argument('--comsol-62', default=DEFAULT_COMSOL_PATHS.get('6.2'))
+        args = parser.parse_args()
 
-    comsol_paths = {
-        '6.3': args.comsol_63,
-        '6.2': args.comsol_62,
-    }
+        comsol_paths = {'6.3': args.comsol_63, '6.2': args.comsol_62}
+        client = NodeClient(server_url=_normalise_url(args.server),
+                            comsol_paths=comsol_paths)
+        client.run()
+        return
 
-    client = NodeClient(server_url=args.server, comsol_paths=comsol_paths)
-    client.run()
+    # GUI mode
+    import tkinter as tk
+    from tkinter import ttk  # noqa: F401 — ensures ttk theme loads before NodeClientGUI
+
+    root = tk.Tk()
+    try:
+        root.tk.call('tk', 'scaling', 1.25)
+    except Exception:
+        pass
+    NodeClientGUI(root)
+    root.mainloop()
 
 
 if __name__ == '__main__':
