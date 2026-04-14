@@ -80,7 +80,7 @@
                                 </div>
                             </td>
                             <td style="color:var(--c-text-sec);font-size:13px;">
-                                {{ user.created_at.strftime('%Y-%m-%d %H:%M') }}
+                                {{ user.created_at|localtime }}
                             </td>
                             <td>
                                 {% if user.is_active %}
@@ -116,6 +116,10 @@
                 <a href="{{ url_for('queue_status') }}" class="btn btn-outline-info" style="justify-content:flex-start;">
                     <i class="fas fa-list"></i>
                     {{ g.get_text('view_queue') }}
+                </a>
+                <a href="{{ url_for('admin_settings') }}" class="btn btn-outline-secondary" style="justify-content:flex-start;">
+                    <i class="fas fa-sliders"></i>
+                    {{ 'Server Settings' if g.language == 'en' else '服务器设置' }}
                 </a>
             </div>
         </div>

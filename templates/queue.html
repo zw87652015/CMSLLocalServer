@@ -29,7 +29,7 @@
                                 <div>
                                     <div class="queue-item-name">{{ task.original_filename }}</div>
                                     <div class="queue-item-meta">
-                                        {{ task.created_at.strftime('%H:%M:%S') if task.created_at else g.get_text('unknown_time') }}
+                                        {{ task.created_at|localtime('%H:%M:%S') if task.created_at else g.get_text('unknown_time') }}
                                     </div>
                                 </div>
                                 <span class="badge {{ 'bg-danger' if task.priority == 'high' else 'bg-secondary' }}">
@@ -59,7 +59,7 @@
                                     <div>
                                         <div class="queue-item-name">{{ task.original_filename }}</div>
                                         <div class="queue-item-meta">
-                                            {{ g.get_text('start_time') }}: {{ task.started_at.strftime('%H:%M:%S') if task.started_at else g.get_text('unknown_time') }}
+                                            {{ g.get_text('start_time') }}: {{ task.started_at|localtime('%H:%M:%S') if task.started_at else g.get_text('unknown_time') }}
                                         </div>
                                     </div>
                                     <span class="badge bg-warning">{{ g.get_text('running') }}</span>
@@ -156,7 +156,7 @@
 
                 {% if stats.timestamp %}
                 <div style="margin-top:16px;font-size:12px;color:var(--c-text-muted);text-align:right;">
-                    {{ g.get_text('update_time') }}: {{ stats.timestamp.strftime('%H:%M:%S') }}
+                    {{ g.get_text('update_time') }}: {{ stats.timestamp|localtime('%H:%M:%S') }}
                 </div>
                 {% endif %}
 

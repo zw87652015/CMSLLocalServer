@@ -103,7 +103,7 @@
                         </div>
                     </td>
                     <td style="color:var(--c-text-sec);font-size:13px;white-space:nowrap;">
-                        {{ task.created_at.strftime('%m-%d %H:%M') }}
+                        {{ task.created_at|localtime('%m-%d %H:%M') }}
                     </td>
                     <td style="color:var(--c-text-sec);font-size:13px;white-space:nowrap;">
                         {{ "%.1f"|format(task.execution_time) ~ 's' if task.execution_time else '—' }}

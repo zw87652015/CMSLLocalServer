@@ -12,10 +12,19 @@ from urllib.parse import urlparse
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 import unicodedata
-from models import db, User, Task, SystemStats
+from models import db, User, Task, SystemStats, ServerConfig
 from forms import LoginForm, RegistrationForm, ChangePasswordForm
 from config import Config
 # Import moved to avoid circular import
+
+def _localtime(dt, fmt='%Y-%m-%d %H:%M'):
+    """Convert a UTC datetime (aware or naive) to server local time and format it."""
+    if dt is None:
+        return '—'
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local_dt = dt.astimezone(datetime.now().astimezone().tzinfo)
+    return local_dt.strftime(fmt)
 
 def create_app():
     app = Flask(__name__)
@@ -24,6 +33,9 @@ def create_app():
     # Ensure proper encoding for Chinese characters
     app.config['JSON_AS_ASCII'] = False
     
+    # Register local-time filter for templates
+    app.jinja_env.filters['localtime'] = _localtime
+
     # Initialize extensions
     db.init_app(app)
     Config.init_app(app)
@@ -461,7 +473,7 @@ TRANSLATIONS = {
 
 def get_language():
     """Get current language from session or default to Chinese"""
-    return session.get('language', 'zh')
+    return session.get('language', 'en')
 
 def get_text(key):
     """Get translated text for current language"""
@@ -650,7 +662,7 @@ def allowed_file(filename):
 def generate_unique_filename(original_filename):
     """Generate unique filename while preserving extension"""
     name, ext = os.path.splitext(original_filename)
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    timestamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
     unique_id = str(uuid.uuid4())[:8]
     return f"{name}_{timestamp}_{unique_id}{ext}"
 
@@ -729,6 +741,13 @@ def upload_file():
         })
         
     except Exception as e:
+        db.session.rollback()
+        # Clean up the uploaded file if it was saved
+        if 'upload_path' in locals() and upload_path.exists():
+            try:
+                upload_path.unlink()
+            except:
+                pass
         return jsonify({'error': str(e)}), 500
 
 @app.route('/tasks')
@@ -876,7 +895,7 @@ def queue_status():
                 valid_exec_times = [t.execution_time for t in recent_tasks if t.execution_time is not None]
                 if valid_exec_times:
                     self.avg_execution_time = sum(valid_exec_times) / len(valid_exec_times)
-            self.timestamp = datetime.now()
+            self.timestamp = datetime.now(timezone.utc)
     
     stats = RealTimeStats()
     
@@ -950,7 +969,7 @@ def api_stats():
         'disk_usage': disk_usage,
         'avg_queue_time': avg_queue_time,
         'avg_execution_time': avg_execution_time,
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now(timezone.utc).isoformat()
     })
 
 @app.route('/logs/<task_id>')
@@ -1058,18 +1077,41 @@ def delete_task(task_id):
         return jsonify({'error': 'Task not found'}), 404
     
     try:
-        # Cancel task if it's still running
-        if task.can_be_cancelled() and task.celery_task_id:
+        was_active = task.can_be_cancelled()
+
+        # Revoke Celery task
+        if task.celery_task_id:
             from tasks import run_comsol_simulation
             celery_task = run_comsol_simulation.AsyncResult(task.celery_task_id)
             celery_task.revoke(terminate=True)
-        
+
+        # Kill the COMSOL OS process and all its children
+        if task.process_id:
+            try:
+                import psutil
+                parent = psutil.Process(task.process_id)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                try:
+                    parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            except Exception as e:
+                print(f"Warning: Failed to kill COMSOL process {task.process_id}: {e}")
+
         # Clean up associated files
         task.cleanup_files()
         
         # Delete task from database
         db.session.delete(task)
         db.session.commit()
+        
+        if was_active:
+            from tasks import process_next_queued_task
+            process_next_queued_task.apply_async(countdown=3)
         
         return jsonify({
             'success': True,
@@ -1079,6 +1121,42 @@ def delete_task(task_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': f'Failed to delete task: {str(e)}'}), 500
+
+@app.route('/admin/settings', methods=['GET', 'POST'])
+@login_required
+@admin_required
+def admin_settings():
+    """Admin: COMSOL path and CPU core settings"""
+    import multiprocessing
+    total_cores = multiprocessing.cpu_count()
+
+    if request.method == 'POST':
+        for version in Config.COMSOL_VERSIONS:
+            path_key = f'comsol_path_{version}'
+            path_val = request.form.get(path_key, '').strip()
+            if path_val:
+                ServerConfig.set(path_key, path_val)
+
+        cores = request.form.get('cpu_cores', '').strip()
+        if cores.isdigit() and 1 <= int(cores) <= total_cores:
+            ServerConfig.set('cpu_cores', cores)
+
+        flash('Settings saved successfully.' if g.language == 'en' else '设置已保存。', 'success')
+        return redirect(url_for('admin_settings'))
+
+    # Build current effective paths from DB or config defaults
+    comsol_paths = {}
+    for version, info in Config.COMSOL_VERSIONS.items():
+        db_path = ServerConfig.get(f'comsol_path_{version}')
+        comsol_paths[version] = db_path if db_path else info['executable']
+
+    cpu_cores = int(ServerConfig.get('cpu_cores', total_cores))
+
+    return render_template('admin/settings.html',
+                           comsol_versions=Config.COMSOL_VERSIONS,
+                           comsol_paths=comsol_paths,
+                           cpu_cores=cpu_cores,
+                           total_cores=total_cores)
 
 @app.route('/change_password', methods=['GET', 'POST'])
 @login_required

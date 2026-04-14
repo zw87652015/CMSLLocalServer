@@ -1,10 +1,10 @@
 import os
 import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from celery.app import Celery
-from models import db, Task, SystemStats
+from models import db, Task, SystemStats, ServerConfig
 from config import Config
 from app import app  # Import the Flask app
 
@@ -107,14 +107,28 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             task.celery_task_id = self.request.id
             db.session.commit()
             
-            # Get COMSOL executable based on task version
-            comsol_executable = Config.COMSOL_VERSIONS.get(task.comsol_version, {}).get('executable')
+            # Get COMSOL executable: prefer admin-configured DB path, fall back to Config default
+            version_key = f'comsol_path_{task.comsol_version}'
+            comsol_executable = (
+                ServerConfig.get(version_key)
+                or Config.COMSOL_VERSIONS.get(task.comsol_version, {}).get('executable')
+            )
             if not comsol_executable:
                 raise Exception(f"COMSOL version {task.comsol_version} not configured")
-            
-            # Prepare COMSOL® command
+
+            # Determine CPU core limit from DB setting (admin-configurable)
+            import multiprocessing
+            total_cores = multiprocessing.cpu_count()
+            try:
+                cpu_cores = int(ServerConfig.get('cpu_cores', total_cores))
+                cpu_cores = max(1, min(cpu_cores, total_cores))
+            except (TypeError, ValueError):
+                cpu_cores = total_cores
+
+            # Prepare COMSOL® command with CPU core limit
             comsol_cmd = [
                 comsol_executable,
+                '-np', str(cpu_cores),
                 '-inputfile', str(input_file_path),
                 '-outputfile', str(output_file_path)
             ]
@@ -123,7 +137,7 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             user_folder = task.user.get_user_folder()
             user_logs_path = Config.LOGS_FOLDER / user_folder
             user_logs_path.mkdir(parents=True, exist_ok=True)
-            log_file_path = user_logs_path / f"{task.unique_filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+            log_file_path = user_logs_path / f"{task.unique_filename}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
             task.log_filename = log_file_path.name
             db.session.commit()
             

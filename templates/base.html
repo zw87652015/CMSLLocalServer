@@ -85,6 +85,13 @@
                                     {{ g.get_text('task_management') }}
                                 </a>
                             </li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('admin_settings') }}">
+                                    <i class="fas fa-sliders" style="width:16px;opacity:.5;"></i>
+                                    {{ 'Server Settings' if g.language == 'en' else '服务器设置' }}
+                                </a>
+                            </li>
                         </ul>
                     </li>
                     {% endif %}

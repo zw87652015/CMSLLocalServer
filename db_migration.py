@@ -52,6 +52,19 @@ def migrate_database():
                     os.rename(old_folder, new_folder)
                     print(f"Renamed {old_folder} -> {new_folder}")
 
+        # Migration 4: create server_config table
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='server_config'")
+        if not cursor.fetchone():
+            cursor.execute("""
+                CREATE TABLE server_config (
+                    key   VARCHAR(64) PRIMARY KEY NOT NULL,
+                    value TEXT NOT NULL
+                )
+            """)
+            print("Created 'server_config' table")
+        else:
+            print("'server_config' already exists, skipping")
+
         conn.commit()
         print("Migration complete.")
 

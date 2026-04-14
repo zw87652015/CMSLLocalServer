@@ -76,6 +76,7 @@ class User(UserMixin, db.Model):
     def __repr__(self):
         return f'<User {self.username}>'
 
+
 class Task(db.Model):
     __tablename__ = 'tasks'
     
@@ -137,7 +138,7 @@ class Task(db.Model):
         self.status = 'queued'
         self.queued_at = utcnow()
         if self.created_at:
-            self.queue_time = (self.queued_at - self.created_at).total_seconds()
+            self.queue_time = (self.queued_at - _ensure_aware(self.created_at)).total_seconds()
         db.session.commit()
     
     def mark_started(self):
@@ -152,7 +153,7 @@ class Task(db.Model):
         if result_filename:
             self.result_filename = result_filename
         if self.started_at:
-            self.execution_time = (self.completed_at - self.started_at).total_seconds()
+            self.execution_time = (self.completed_at - _ensure_aware(self.started_at)).total_seconds()
         db.session.commit()
     
     def mark_failed(self, error_message=None, error_log=None):
@@ -163,7 +164,7 @@ class Task(db.Model):
         if error_log:
             self.error_log = error_log
         if self.started_at:
-            self.execution_time = (self.completed_at - self.started_at).total_seconds()
+            self.execution_time = (self.completed_at - _ensure_aware(self.started_at)).total_seconds()
         db.session.commit()
     
     def mark_cancelled(self):
@@ -171,7 +172,7 @@ class Task(db.Model):
         self.status = 'cancelled'
         self.completed_at = utcnow()
         if self.started_at:
-            self.execution_time = (self.completed_at - self.started_at).total_seconds()
+            self.execution_time = (self.completed_at - _ensure_aware(self.started_at)).total_seconds()
         db.session.commit()
     
     def can_be_cancelled(self):
@@ -208,6 +209,31 @@ class Task(db.Model):
             log_path = Config.LOGS_FOLDER / user_folder / self.log_filename
             if log_path.exists():
                 _remove_file(log_path)
+
+class ServerConfig(db.Model):
+    """Persistent admin-editable server configuration stored in the database."""
+    __tablename__ = 'server_config'
+
+    key   = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.Text, nullable=False)
+
+    @classmethod
+    def get(cls, key, default=None):
+        row = cls.query.get(key)
+        return row.value if row else default
+
+    @classmethod
+    def set(cls, key, value):
+        row = cls.query.get(key)
+        if row:
+            row.value = str(value)
+        else:
+            db.session.add(cls(key=key, value=str(value)))
+        db.session.commit()
+
+    def __repr__(self):
+        return f'<ServerConfig {self.key}={self.value}>'
+
 
 class SystemStats(db.Model):
     __tablename__ = 'system_stats'
