@@ -976,9 +976,15 @@ def view_logs(task_id):
     """View task logs"""
     task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
     
+    # Node tasks: no local log file — return error_log stored in DB if available
+    if task and task.assigned_node_id and not task.log_filename:
+        if task.error_log:
+            return jsonify({'logs': task.error_log})
+        return jsonify({'logs': f'[Task ran on node {task.assigned_node_id[:8]}… — no log file was uploaded]'})
+
     if not task or not task.log_filename:
         return jsonify({'error': 'Log file not found'}), 404
-    
+
     user_folder = current_user.get_user_folder()
     log_path = Config.LOGS_FOLDER / user_folder / task.log_filename
     if not log_path.exists():

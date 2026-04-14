@@ -211,13 +211,22 @@ class NodeClient:
     # ------------------------------------------------------------------
     # Heartbeat
     # ------------------------------------------------------------------
-    def heartbeat(self, status='online'):
+    def heartbeat(self, status='online') -> bool:
+        """Send a heartbeat.
+        Returns True on success, False on network/server error.
+        Raises PermissionError if the server returns 401 (stale credentials)."""
         try:
             resp = self._post('/api/nodes/heartbeat', json={'status': status})
+            if resp.status_code == 401:
+                raise PermissionError('Credentials rejected by server (401)')
             resp.raise_for_status()
             self._last_heartbeat = time.time()
+            return True
+        except PermissionError:
+            raise
         except Exception as exc:
             logger.warning('Heartbeat failed: %s', exc)
+            return False
 
     def _maybe_heartbeat(self, status='online'):
         if time.time() - self._last_heartbeat >= HEARTBEAT_INTERVAL:
@@ -228,11 +237,16 @@ class NodeClient:
     # ------------------------------------------------------------------
     def poll_task(self):
         """Ask the server for the next task assigned to this node.
-        Returns the task dict or None."""
+        Returns the task dict or None.
+        Raises PermissionError on 401 (stale credentials)."""
         try:
             resp = self._get('/api/nodes/task/poll')
+            if resp.status_code == 401:
+                raise PermissionError('Credentials rejected by server (401)')
             resp.raise_for_status()
             return resp.json().get('task')
+        except PermissionError:
+            raise
         except Exception as exc:
             logger.warning('Poll failed: %s', exc)
             return None
@@ -313,41 +327,68 @@ class NodeClient:
         except Exception:
             pass
 
-        output_lines    = []
-        last_progress   = 0.0
-        last_report_t   = time.time()
-        aborted         = False
+        # ── Read stdout in a background thread so the main thread can poll
+        # abort_event and the server cancel flag without blocking on I/O.
+        stdout_q: queue.Queue = queue.Queue()
 
-        for line in process.stdout:
-            # Check if we should abort (stop button or server-side cancel)
+        def _stdout_reader():
+            for raw_line in process.stdout:
+                stdout_q.put(raw_line)
+            stdout_q.put(None)  # sentinel: process exited
+
+        threading.Thread(target=_stdout_reader, daemon=True,
+                         name='comsol-reader').start()
+
+        output_lines  = []
+        last_progress = 0.0
+        last_report_t = time.time()
+        last_step     = None
+        aborted       = False
+
+        while True:
+            # Poll abort every 2 s even if COMSOL produces no output
+            try:
+                raw = stdout_q.get(timeout=2.0)
+            except queue.Empty:
+                raw = ...   # timeout sentinel — do the periodic checks below
+
+            # ── Abort check (Stop button or prior server cancel signal) ──
             if self.abort_event.is_set():
                 logger.warning('Abort requested — killing COMSOL process.')
                 process.kill()
                 aborted = True
                 break
 
-            line = line.strip()
+            # ── Periodic server-side cancel check (every PROGRESS_INTERVAL) ──
+            now = time.time()
+            if now - last_report_t >= PROGRESS_INTERVAL:
+                if self._report_progress(task_id, last_progress, last_step):
+                    logger.warning('Server requested abort for task %s.', task_id)
+                    process.kill()
+                    aborted = True
+                    break
+                last_report_t = now
+
+            if raw is None:
+                break       # process exited normally
+            if raw is ...:
+                continue    # was a timeout — no line to process
+
+            # ── Process the output line ──
+            line = raw.strip()
             output_lines.append(line)
             self._maybe_heartbeat('busy')
 
             pct, step = ProgressParser.parse_line(line)
             if pct is not None and pct > last_progress:
                 last_progress = pct
-                if time.time() - last_report_t >= PROGRESS_INTERVAL:
-                    if self._report_progress(task_id, pct, step):
-                        # Server signalled cancel (task cancelled or deleted)
-                        logger.warning('Server requested abort for task %s.', task_id)
-                        process.kill()
-                        aborted = True
-                        break
-                    last_report_t = time.time()
+                last_step     = step
 
         return_code  = process.wait()
         self._current_process = None
 
         if aborted:
             logger.info('Task %s aborted.', task_id)
-            # Clean up local work files and return — no need to report
             for p in (input_path, output_path):
                 try:
                     if p.exists():
@@ -402,21 +443,33 @@ class NodeClient:
         return False
 
     def _post_with_retry(self, path, max_attempts=4, **kwargs):
-        """POST with exponential backoff.  Returns the Response or raises."""
+        """POST with exponential backoff.
+        4xx responses are NOT retried — they indicate a permanent client-side
+        error (e.g. task deleted on server).  Only network errors and 5xx are
+        retried.  Returns the Response or raises."""
+        import requests as _requests
         delay = 5
         last_exc = None
         for attempt in range(1, max_attempts + 1):
             try:
                 resp = self._post(path, **kwargs)
+                if 400 <= resp.status_code < 500:
+                    # Client error — no point retrying
+                    resp.raise_for_status()
                 resp.raise_for_status()
                 return resp
+            except _requests.HTTPError as exc:
+                # 4xx already raised above (single attempt); re-raise immediately
+                if exc.response is not None and 400 <= exc.response.status_code < 500:
+                    raise
+                last_exc = exc
             except Exception as exc:
                 last_exc = exc
-                if attempt < max_attempts:
-                    logger.warning('Attempt %d/%d failed (%s). Retrying in %ds …',
-                                   attempt, max_attempts, exc, delay)
-                    time.sleep(delay)
-                    delay = min(delay * 2, 60)
+            if attempt < max_attempts:
+                logger.warning('Attempt %d/%d failed (%s). Retrying in %ds …',
+                               attempt, max_attempts, last_exc, delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 60)
         raise last_exc
 
     def _report_complete(self, task_id, result_path: Path):
@@ -477,7 +530,21 @@ class NodeClient:
                 'auth_token': self.auth_token,
             })
 
-        self.heartbeat()
+        # Initial heartbeat — if 401, saved credentials are stale; re-register
+        try:
+            self.heartbeat()
+        except PermissionError:
+            logger.warning('Saved credentials rejected. Re-registering…')
+            self.node_id = None
+            self.auth_token = None
+            self.register()
+            save_config({
+                'server_url': self.server_url,
+                'node_id':    self.node_id,
+                'auth_token': self.auth_token,
+            })
+            self.heartbeat()
+
         logger.info('Node client running. Polling every %d s ...', POLL_INTERVAL)
 
         while True:
@@ -703,18 +770,32 @@ class NodeClientGUI:
                 logger.error('Registration failed: %s', exc)
                 self.root.after(0, self._on_worker_stopped)
                 return
-            save_config({
-                **cfg,
-                'server_url': client.server_url,
-                'node_id':    client.node_id,
-                'auth_token': client.auth_token,
-            })
+            cfg = {**cfg, 'server_url': client.server_url,
+                   'node_id': client.node_id, 'auth_token': client.auth_token}
+            save_config(cfg)
+
+        # Initial heartbeat — if 401, saved credentials are stale; re-register
+        try:
+            client.heartbeat()
+        except PermissionError:
+            logger.warning('Saved credentials rejected. Re-registering…')
+            client.node_id = None
+            client.auth_token = None
+            try:
+                client.register()
+            except Exception as exc:
+                logger.error('Re-registration failed: %s', exc)
+                self.root.after(0, self._on_worker_stopped)
+                return
+            cfg = {**cfg, 'server_url': client.server_url,
+                   'node_id': client.node_id, 'auth_token': client.auth_token}
+            save_config(cfg)
+            client.heartbeat()
 
         # Update node label in UI
         self.root.after(0, lambda: self._node_lbl.config(
             text=f'node_id: {client.node_id[:8]}…'))
 
-        client.heartbeat()
         logger.info('Node client running. Polling every %d s …', POLL_INTERVAL)
 
         while not self._stop_event.is_set():
@@ -725,6 +806,22 @@ class NodeClientGUI:
                     client.execute_task(task)
                     client.heartbeat('online')
                 else:
+                    self._stop_event.wait(POLL_INTERVAL)
+            except PermissionError:
+                # Server rejected our credentials mid-session (e.g. DB reset)
+                logger.warning('Got 401 mid-session. Re-registering…')
+                client.node_id = None
+                client.auth_token = None
+                try:
+                    client.register()
+                    cfg2 = load_config()
+                    save_config({**cfg2, 'server_url': client.server_url,
+                                 'node_id': client.node_id,
+                                 'auth_token': client.auth_token})
+                    self.root.after(0, lambda: self._node_lbl.config(
+                        text=f'node_id: {client.node_id[:8]}…'))
+                except Exception as exc2:
+                    logger.error('Re-registration failed: %s', exc2)
                     self._stop_event.wait(POLL_INTERVAL)
             except Exception as exc:
                 logger.error('Unexpected error: %s', exc, exc_info=True)
