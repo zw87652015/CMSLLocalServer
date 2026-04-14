@@ -1219,6 +1219,8 @@ def node_register():
         db.session.add(node)
 
     db.session.commit()
+    # Assign any waiting tasks to this newly-online node
+    _dispatch_pending_node_tasks()
     return jsonify({'node_id': node.id, 'auth_token': node.auth_token}), 200
 
 
@@ -1328,7 +1330,12 @@ def node_task_progress(task_id):
 
 @app.route('/api/nodes/task/<task_id>/complete', methods=['POST'])
 def node_task_complete(task_id):
-    """Node uploads the result file and marks the task completed."""
+    """Node marks a task completed and optionally uploads the result file.
+
+    The status update and the file upload are intentionally decoupled:
+    mark_completed() is called as soon as the request is authenticated so
+    the task status is always updated even if the file save fails.
+    """
     node = _node_from_request()
     if not node:
         return jsonify({'error': 'Unauthorized'}), 401
@@ -1337,20 +1344,26 @@ def node_task_complete(task_id):
     if not task:
         return jsonify({'error': 'Task not found'}), 404
 
-    if 'result_file' not in request.files:
-        return jsonify({'error': 'No result file uploaded'}), 400
+    # ── 1. Mark the task complete immediately ─────────────────────────────
+    result_filename = None
+    stem = Path(task.unique_filename).stem
+    expected_result = f"{stem}_solved.mph"
 
-    result_file   = request.files['result_file']
-    user_folder   = task.user.get_user_folder()
-    result_dir    = Config.RESULTS_FOLDER / user_folder
-    result_dir.mkdir(parents=True, exist_ok=True)
+    # ── 2. Try to save the result file (best-effort, never blocks status) ──
+    if 'result_file' in request.files:
+        result_file = request.files['result_file']
+        try:
+            user_folder = task.user.get_user_folder()
+            result_dir  = Config.RESULTS_FOLDER / user_folder
+            result_dir.mkdir(parents=True, exist_ok=True)
+            result_path = result_dir / expected_result
+            result_file.save(str(result_path))
+            result_filename = expected_result
+        except Exception as exc:
+            app.logger.error('node_task_complete: could not save result file '
+                             'for task %s: %s', task_id, exc)
 
-    stem            = Path(task.unique_filename).stem
-    result_filename = f"{stem}_solved.mph"
-    result_path     = result_dir / result_filename
-    result_file.save(str(result_path))
-
-    task.mark_completed(result_filename)
+    task.mark_completed(result_filename)   # commits status = 'completed'
     node.status          = 'online'
     node.current_task_id = None
     db.session.commit()
@@ -1362,6 +1375,44 @@ def node_task_complete(task_id):
         pass
 
     _dispatch_pending_node_tasks()
+    return jsonify({'ok': True, 'has_result': result_filename is not None}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/upload_result', methods=['POST'])
+def node_upload_result(task_id):
+    """Node uploads the result file for an already-completed task.
+
+    Called by the node client as a follow-up if the first /complete call
+    succeeded without a file (e.g., the file was too large for a single
+    multipart request).
+    """
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    if 'result_file' not in request.files:
+        return jsonify({'error': 'No result_file in request'}), 400
+
+    result_file = request.files['result_file']
+    try:
+        user_folder     = task.user.get_user_folder()
+        result_dir      = Config.RESULTS_FOLDER / user_folder
+        result_dir.mkdir(parents=True, exist_ok=True)
+        stem            = Path(task.unique_filename).stem
+        result_filename = f"{stem}_solved.mph"
+        result_path     = result_dir / result_filename
+        result_file.save(str(result_path))
+        task.result_filename = result_filename
+        db.session.commit()
+    except Exception as exc:
+        app.logger.error('node_upload_result: save failed for task %s: %s',
+                         task_id, exc)
+        return jsonify({'error': str(exc)}), 500
+
     return jsonify({'ok': True}), 200
 
 
@@ -1379,7 +1430,7 @@ def node_task_fail(task_id):
     data          = request.get_json(silent=True) or {}
     error_message = data.get('error_message', 'Node reported failure')
     error_log     = data.get('error_log', '')
-    task.mark_failed(error_message, error_log)
+    task.mark_failed(error_message, error_log)   # commits status = 'failed'
     node.status          = 'online'
     node.current_task_id = None
     db.session.commit()
@@ -1429,16 +1480,45 @@ def admin_remove_node(node_id):
 # ---------------------------------------------------------------------------
 
 def _dispatch_pending_node_tasks():
-    """After a node finishes a task, assign any pending tasks to now-idle nodes."""
-    pending = Task.query.filter_by(status='pending').order_by(Task.created_at).all()
-    for task in pending:
-        candidates = Node.query.filter_by(status='online').all()
-        for node in candidates:
+    """Assign unallocated queued/pending tasks to any available online nodes.
+
+    Tasks are 'pending' for only a moment during upload, then become 'queued'.
+    A queued task without an assigned_node_id is either waiting for a Celery
+    worker, or was never dispatched.  If an online node exists that can handle
+    the task we reassign it (revoking the Celery reservation if present).
+    """
+    # Collect tasks that have no node assigned yet
+    waiting = Task.query.filter(
+        Task.status.in_(['pending', 'queued']),
+        Task.assigned_node_id.is_(None),
+    ).order_by(Task.created_at).all()
+
+    if not waiting:
+        return
+
+    online_nodes = Node.query.filter_by(status='online').all()
+    if not online_nodes:
+        return
+
+    for task in waiting:
+        for node in online_nodes:
             if task.comsol_version in node.comsol_versions:
+                # Revoke any outstanding Celery reservation
+                if task.celery_task_id:
+                    try:
+                        from tasks import run_comsol_simulation
+                        run_comsol_simulation.AsyncResult(
+                            task.celery_task_id).revoke()
+                        task.celery_task_id = None
+                    except Exception:
+                        pass
+
                 task.assigned_node_id = node.id
-                task.mark_queued()
-                # mark_queued commits, so no extra commit needed
-                break   # move to the next pending task
+                if task.status != 'queued':
+                    task.mark_queued()   # commits
+                else:
+                    db.session.commit()
+                break  # next task
 
 
 def _dispatch_task(task, upload_path, result_path):

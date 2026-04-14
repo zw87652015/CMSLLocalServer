@@ -358,27 +358,63 @@ class NodeClient:
         except Exception as exc:
             logger.warning('Progress report failed: %s', exc)
 
+    def _post_with_retry(self, path, max_attempts=4, **kwargs):
+        """POST with exponential backoff.  Returns the Response or raises."""
+        delay = 5
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = self._post(path, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_attempts:
+                    logger.warning('Attempt %d/%d failed (%s). Retrying in %ds …',
+                                   attempt, max_attempts, exc, delay)
+                    time.sleep(delay)
+                    delay = min(delay * 2, 60)
+        raise last_exc
+
     def _report_complete(self, task_id, result_path: Path):
+        # Step 1 — tell the server the task is done (no file yet).
+        # This always runs and is retried; status is updated even if
+        # the file upload later fails.
         try:
-            with open(result_path, 'rb') as f:
-                resp = self._post(
-                    f'/api/nodes/task/{task_id}/complete',
-                    files={'result_file': (result_path.name, f, 'application/octet-stream')},
-                    timeout=300,  # large files may take a while
-                )
-            resp.raise_for_status()
-            logger.info('Result uploaded for task %s', task_id)
+            self._post_with_retry(f'/api/nodes/task/{task_id}/complete',
+                                  json={'completed': True})
+            logger.info('Task %s marked completed on server.', task_id)
         except Exception as exc:
-            logger.error('Failed to upload result for task %s: %s', task_id, exc)
+            logger.error('Could not mark task %s complete: %s', task_id, exc)
+            # Still attempt the file upload below — the server may accept it.
+
+        # Step 2 — upload result file separately (best-effort).
+        if result_path and result_path.exists():
+            try:
+                with open(result_path, 'rb') as f:
+                    self._post_with_retry(
+                        f'/api/nodes/task/{task_id}/upload_result',
+                        files={'result_file': (result_path.name, f,
+                                               'application/octet-stream')},
+                        timeout=300,
+                    )
+                logger.info('Result file uploaded for task %s.', task_id)
+            except Exception as exc:
+                logger.error('Result file upload failed for task %s: %s — '
+                             'task is still marked complete but no download '
+                             'link will be available.', task_id, exc)
+        else:
+            logger.warning('No result file to upload for task %s.', task_id)
 
     def _report_fail(self, task_id, error_message, error_log):
         try:
-            self._post(
+            self._post_with_retry(
                 f'/api/nodes/task/{task_id}/fail',
-                json={'error_message': error_message, 'error_log': error_log},
+                json={'error_message': error_message,
+                      'error_log': error_log[-10000:]},  # cap log size
             )
         except Exception as exc:
-            logger.warning('Failed to report task failure: %s', exc)
+            logger.error('Could not report failure for task %s: %s', task_id, exc)
 
     # ------------------------------------------------------------------
     # Main loop
