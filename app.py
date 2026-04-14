@@ -831,6 +831,7 @@ def history():
     return render_template('history.html', tasks=tasks)
 
 @app.route('/queue')
+@login_required
 def queue_status():
     """Global queue status page"""
     from datetime import date
@@ -1321,11 +1322,15 @@ def node_task_progress(task_id):
     if not task:
         return jsonify({'error': 'Task not found'}), 404
 
+    # If the task was cancelled while the node was running it, tell the node to abort
+    if task.status == 'cancelled':
+        return jsonify({'ok': True, 'cancel': True}), 200
+
     data       = request.get_json(silent=True) or {}
     percentage = float(data.get('percentage', task.progress_percentage or 0))
     step       = data.get('step')
     task.update_progress(percentage, step)
-    return jsonify({'ok': True}), 200
+    return jsonify({'ok': True, 'cancel': False}), 200
 
 
 @app.route('/api/nodes/task/<task_id>/complete', methods=['POST'])

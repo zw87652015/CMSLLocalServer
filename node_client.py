@@ -143,13 +143,15 @@ class ProgressParser:
 # ---------------------------------------------------------------------------
 class NodeClient:
     def __init__(self, server_url: str, comsol_paths: dict):
-        self.server_url    = server_url.rstrip('/')
-        self.comsol_paths  = comsol_paths
-        self.node_id       = None
-        self.auth_token    = None
-        self.session       = requests.Session()
-        self.session.timeout = 30
-        self._last_heartbeat = 0.0
+        self.server_url       = server_url.rstrip('/')
+        self.comsol_paths     = comsol_paths
+        self.node_id          = None
+        self.auth_token       = None
+        self.session          = requests.Session()
+        self.session.timeout  = 30
+        self._last_heartbeat  = 0.0
+        self._current_process = None   # subprocess.Popen while a task runs
+        self.abort_event      = threading.Event()  # set to kill current task
 
     # ------------------------------------------------------------------
     # Low-level helpers
@@ -275,6 +277,7 @@ class NodeClient:
             return
 
         # --- Report start ---
+        self.abort_event.clear()
         try:
             self._post(f'/api/nodes/task/{task_id}/start', json={}).raise_for_status()
         except Exception as exc:
@@ -301,12 +304,28 @@ class NodeClient:
             encoding=system_encoding,
             errors='replace',
         )
+        self._current_process = process
+
+        # Report PID so server can show it (best-effort)
+        try:
+            self._post(f'/api/nodes/task/{task_id}/start',
+                       json={'process_id': process.pid})
+        except Exception:
+            pass
 
         output_lines    = []
         last_progress   = 0.0
         last_report_t   = time.time()
+        aborted         = False
 
         for line in process.stdout:
+            # Check if we should abort (stop button or server-side cancel)
+            if self.abort_event.is_set():
+                logger.warning('Abort requested — killing COMSOL process.')
+                process.kill()
+                aborted = True
+                break
+
             line = line.strip()
             output_lines.append(line)
             self._maybe_heartbeat('busy')
@@ -315,10 +334,28 @@ class NodeClient:
             if pct is not None and pct > last_progress:
                 last_progress = pct
                 if time.time() - last_report_t >= PROGRESS_INTERVAL:
-                    self._report_progress(task_id, pct, step)
+                    if self._report_progress(task_id, pct, step):
+                        # Server signalled cancel (task cancelled or deleted)
+                        logger.warning('Server requested abort for task %s.', task_id)
+                        process.kill()
+                        aborted = True
+                        break
                     last_report_t = time.time()
 
         return_code  = process.wait()
+        self._current_process = None
+
+        if aborted:
+            logger.info('Task %s aborted.', task_id)
+            # Clean up local work files and return — no need to report
+            for p in (input_path, output_path):
+                try:
+                    if p.exists():
+                        p.unlink()
+                except Exception:
+                    pass
+            return
+
         full_output  = '\n'.join(output_lines)
 
         # --- Evaluate result ---
@@ -349,14 +386,20 @@ class NodeClient:
     # ------------------------------------------------------------------
     # Report helpers
     # ------------------------------------------------------------------
-    def _report_progress(self, task_id, percentage, step=None):
+    def _report_progress(self, task_id, percentage, step=None) -> bool:
+        """Send a progress update.  Returns True if the server wants this task aborted."""
         try:
-            self._post(
+            resp = self._post(
                 f'/api/nodes/task/{task_id}/progress',
                 json={'percentage': percentage, 'step': step or ''},
             )
+            if resp.status_code == 404:
+                return True   # task was deleted server-side
+            if resp.ok:
+                return bool(resp.json().get('cancel'))
         except Exception as exc:
             logger.warning('Progress report failed: %s', exc)
+        return False
 
     def _post_with_retry(self, path, max_attempts=4, **kwargs):
         """POST with exponential backoff.  Returns the Response or raises."""
@@ -694,6 +737,15 @@ class NodeClientGUI:
         self._stop_event.set()
         self._btn_stop.config(state='disabled')
         self._status_lbl.config(text='● Stopping…', foreground='#e5c07b')
+        # Kill the running COMSOL subprocess immediately so the worker exits fast
+        if self._client:
+            self._client.abort_event.set()
+            proc = self._client._current_process
+            if proc is not None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
 
     def _on_worker_stopped(self):
         self._btn_start.config(state='normal')
