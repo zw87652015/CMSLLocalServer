@@ -1361,6 +1361,7 @@ def node_task_complete(task_id):
     except Exception:
         pass
 
+    _dispatch_pending_node_tasks()
     return jsonify({'ok': True}), 200
 
 
@@ -1389,6 +1390,7 @@ def node_task_fail(task_id):
     except Exception:
         pass
 
+    _dispatch_pending_node_tasks()
     return jsonify({'ok': True}), 200
 
 
@@ -1425,6 +1427,19 @@ def admin_remove_node(node_id):
 # ---------------------------------------------------------------------------
 # Node-aware task dispatcher — replaces the direct Celery call in upload_file
 # ---------------------------------------------------------------------------
+
+def _dispatch_pending_node_tasks():
+    """After a node finishes a task, assign any pending tasks to now-idle nodes."""
+    pending = Task.query.filter_by(status='pending').order_by(Task.created_at).all()
+    for task in pending:
+        candidates = Node.query.filter_by(status='online').all()
+        for node in candidates:
+            if task.comsol_version in node.comsol_versions:
+                task.assigned_node_id = node.id
+                task.mark_queued()
+                # mark_queued commits, so no extra commit needed
+                break   # move to the next pending task
+
 
 def _dispatch_task(task, upload_path, result_path):
     """Assign task to an online node that supports the required COMSOL version,

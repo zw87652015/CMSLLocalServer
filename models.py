@@ -17,6 +17,16 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+def _ensure_aware(dt):
+    """Return dt as a timezone-aware datetime (UTC).
+    SQLite stores naive datetimes; this prevents subtraction errors."""
+    if dt is None:
+        return dt
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _remove_file(path):
     """Remove a file, logging a warning on failure instead of raising."""
     try:
