@@ -558,21 +558,27 @@ class NodeClient:
 
         logger.info('Node client running. Polling every %d s ...', POLL_INTERVAL)
 
-        while True:
-            try:
-                self._maybe_heartbeat()
-                task = self.poll_task()
-                if task:
-                    self.execute_task(task)
-                    self.heartbeat('online')
-                else:
+        try:
+            while True:
+                try:
+                    self._maybe_heartbeat()
+                    task = self.poll_task()
+                    if task:
+                        self.execute_task(task)
+                        self.heartbeat('online')
+                    else:
+                        time.sleep(POLL_INTERVAL)
+                except KeyboardInterrupt:
+                    logger.info('Shutting down.')
+                    break
+                except Exception as exc:
+                    logger.error('Unexpected error in main loop: %s', exc, exc_info=True)
                     time.sleep(POLL_INTERVAL)
-            except KeyboardInterrupt:
-                logger.info('Shutting down.')
-                break
-            except Exception as exc:
-                logger.error('Unexpected error in main loop: %s', exc, exc_info=True)
-                time.sleep(POLL_INTERVAL)
+        finally:
+            try:
+                self.heartbeat(status='offline')
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -839,6 +845,10 @@ class NodeClientGUI:
                 self._stop_event.wait(POLL_INTERVAL)
 
         logger.info('Node client stopped.')
+        try:
+            client.heartbeat(status='offline')
+        except Exception:
+            pass
         self.root.after(0, self._on_worker_stopped)
 
     def _stop(self):

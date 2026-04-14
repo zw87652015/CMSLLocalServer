@@ -1260,8 +1260,8 @@ def node_heartbeat():
         return jsonify({'error': 'Unauthorized'}), 401
 
     data   = request.get_json(silent=True) or {}
-    status = data.get('status', 'online')   # 'online' | 'busy'
-    if status in ('online', 'busy'):
+    status = data.get('status', 'online')   # 'online' | 'busy' | 'offline'
+    if status in ('online', 'busy', 'offline'):
         node.status = status
     node.touch()
     db.session.commit()
@@ -1626,7 +1626,7 @@ def _dispatch_task(task, upload_path, result_path):
 def _start_heartbeat_monitor(flask_app):
     """Background thread: mark nodes offline if last_seen > 60 s ago."""
     import threading
-    from datetime import timedelta
+    from datetime import timedelta, datetime as _datetime
 
     def _monitor():
         while True:
@@ -1634,7 +1634,11 @@ def _start_heartbeat_monitor(flask_app):
             time.sleep(30)
             try:
                 with flask_app.app_context():
-                    cutoff = utcnow() - timedelta(seconds=60)
+                    # Use naive UTC so the comparison works with SQLite's
+                    # naive-datetime storage (timezone-aware datetimes produce
+                    # strings with +00:00 that compare incorrectly against
+                    # the plain YYYY-MM-DD HH:MM:SS values stored on disk).
+                    cutoff = _datetime.utcnow() - timedelta(seconds=60)
                     stale = Node.query.filter(
                         Node.status != 'offline',
                         Node.last_seen < cutoff
