@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import uuid
@@ -116,6 +117,9 @@ class Task(db.Model):
     # Result files
     result_filename = db.Column(db.String(255))
     log_filename = db.Column(db.String(255))
+
+    # Node distribution — null means local Celery worker
+    assigned_node_id = db.Column(db.String(36), db.ForeignKey('nodes.id'), nullable=True)
     
     def __repr__(self):
         return f'<Task {self.id}: {self.original_filename}>'
@@ -209,6 +213,62 @@ class Task(db.Model):
             log_path = Config.LOGS_FOLDER / user_folder / self.log_filename
             if log_path.exists():
                 _remove_file(log_path)
+
+class Node(db.Model):
+    """A registered node computer that can execute simulation tasks."""
+    __tablename__ = 'nodes'
+
+    id           = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    hostname     = db.Column(db.String(255), nullable=False)
+    ip_address   = db.Column(db.String(45),  nullable=False)
+    auth_token   = db.Column(db.String(64),  nullable=False, unique=True)
+
+    # Capabilities stored as JSON list, e.g. '["6.2","6.3"]'
+    comsol_versions_json = db.Column(db.Text, default='[]')
+    cpu_cores    = db.Column(db.Integer, default=1)
+
+    # status: online | busy | offline
+    status       = db.Column(db.String(20), default='online')
+    current_task_id = db.Column(db.String(36), nullable=True)
+
+    registered_at = db.Column(db.DateTime, default=utcnow)
+    last_seen     = db.Column(db.DateTime, default=utcnow)
+
+    # Back-reference to tasks assigned to this node
+    tasks = db.relationship('Task', backref='node', lazy=True,
+                            foreign_keys='Task.assigned_node_id')
+
+    @property
+    def comsol_versions(self):
+        try:
+            return json.loads(self.comsol_versions_json)
+        except Exception:
+            return []
+
+    @comsol_versions.setter
+    def comsol_versions(self, value):
+        self.comsol_versions_json = json.dumps(value)
+
+    def touch(self):
+        """Update last_seen timestamp."""
+        self.last_seen = utcnow()
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'hostname': self.hostname,
+            'ip_address': self.ip_address,
+            'comsol_versions': self.comsol_versions,
+            'cpu_cores': self.cpu_cores,
+            'status': self.status,
+            'current_task_id': self.current_task_id,
+            'registered_at': self.registered_at.isoformat() if self.registered_at else None,
+            'last_seen': self.last_seen.isoformat() if self.last_seen else None,
+        }
+
+    def __repr__(self):
+        return f'<Node {self.hostname} ({self.ip_address}) [{self.status}]>'
+
 
 class ServerConfig(db.Model):
     """Persistent admin-editable server configuration stored in the database."""

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 import unicodedata
-from models import db, User, Task, SystemStats, ServerConfig
+from models import db, User, Task, SystemStats, ServerConfig, Node
 from forms import LoginForm, RegistrationForm, ChangePasswordForm
 from config import Config
 # Import moved to avoid circular import
@@ -563,7 +563,10 @@ def admin_dashboard():
     users = User.query.all()
     total_tasks = Task.query.count()
     active_tasks = Task.query.filter(Task.status.in_(['pending', 'queued', 'running'])).count()
-    return render_template('admin/dashboard.html', users=users, total_tasks=total_tasks, active_tasks=active_tasks)
+    nodes = Node.query.order_by(Node.registered_at).all()
+    online_nodes = sum(1 for n in nodes if n.status in ('online', 'busy'))
+    return render_template('admin/dashboard.html', users=users, total_tasks=total_tasks,
+                           active_tasks=active_tasks, nodes=nodes, online_nodes=online_nodes)
 
 @app.route('/admin/users')
 @login_required
@@ -719,25 +722,19 @@ def upload_file():
         db.session.add(task)
         db.session.commit()
         
-        # Queue Celery task
+        # Prepare result path, then dispatch to a node or local Celery worker
         result_filename = f"{Path(unique_filename).stem}_solved.mph"
         user_results_path = Config.RESULTS_FOLDER / user_folder
         user_results_path.mkdir(parents=True, exist_ok=True)
         result_path = user_results_path / result_filename
-        
-        from tasks import run_comsol_simulation
-        celery_task = run_comsol_simulation.apply_async(
-            args=[task.id, str(upload_path), str(result_path)],
-            queue=Config.HIGH_PRIORITY_QUEUE if priority == 'high' else Config.NORMAL_PRIORITY_QUEUE
-        )
-        
-        task.celery_task_id = celery_task.id
-        task.mark_queued()
-        
+
+        dispatch_info = _dispatch_task(task, upload_path, result_path)
+
         return jsonify({
             'success': True,
             'task_id': task.id,
-            'message': 'File uploaded and queued for processing'
+            'message': 'File uploaded and queued for processing',
+            'dispatch': dispatch_info,
         })
         
     except Exception as e:
@@ -1179,6 +1176,339 @@ def change_password():
             flash(f'密码修改失败: {str(e)}', 'error')
     
     return render_template('change_password.html', form=form)
+
+# ---------------------------------------------------------------------------
+# Node distribution API
+# ---------------------------------------------------------------------------
+
+def _node_from_request():
+    """Authenticate a node from X-Node-Id / X-Node-Token headers.
+    Returns the Node object or None."""
+    node_id    = request.headers.get('X-Node-Id')
+    node_token = request.headers.get('X-Node-Token')
+    if not node_id or not node_token:
+        return None
+    return Node.query.filter_by(id=node_id, auth_token=node_token).first()
+
+
+@app.route('/api/nodes/register', methods=['POST'])
+def node_register():
+    """Node calls this on startup to register itself."""
+    data = request.get_json(silent=True) or {}
+    hostname         = data.get('hostname', 'unknown')
+    ip_address       = data.get('ip_address') or request.remote_addr
+    comsol_versions  = data.get('comsol_versions', [])
+    cpu_cores        = int(data.get('cpu_cores', 1))
+
+    # Re-register by hostname+ip if already known so nodes survive restarts.
+    node = Node.query.filter_by(hostname=hostname, ip_address=ip_address).first()
+    if node:
+        node.comsol_versions = comsol_versions
+        node.cpu_cores       = cpu_cores
+        node.status          = 'online'
+        node.touch()
+    else:
+        import secrets
+        node = Node(
+            hostname=hostname,
+            ip_address=ip_address,
+            auth_token=secrets.token_hex(32),
+            cpu_cores=cpu_cores,
+        )
+        node.comsol_versions = comsol_versions
+        db.session.add(node)
+
+    db.session.commit()
+    return jsonify({'node_id': node.id, 'auth_token': node.auth_token}), 200
+
+
+@app.route('/api/nodes/heartbeat', methods=['POST'])
+def node_heartbeat():
+    """Node sends this every ~15 s to stay alive."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data   = request.get_json(silent=True) or {}
+    status = data.get('status', 'online')   # 'online' | 'busy'
+    if status in ('online', 'busy'):
+        node.status = status
+    node.touch()
+    db.session.commit()
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/poll', methods=['GET'])
+def node_task_poll():
+    """Node polls for a task assigned to it."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    node.touch()
+    db.session.commit()
+
+    task = Task.query.filter_by(
+        assigned_node_id=node.id,
+        status='queued'
+    ).order_by(Task.created_at).first()
+
+    if not task:
+        return jsonify({'task': None}), 200
+
+    user_folder = task.user.get_user_folder()
+    return jsonify({
+        'task': {
+            'id': task.id,
+            'comsol_version': task.comsol_version,
+            'cpu_cores': int(ServerConfig.get('cpu_cores', node.cpu_cores)),
+            'input_file_url': f"/api/nodes/task/{task.id}/file",
+            'unique_filename': task.unique_filename,
+        }
+    }), 200
+
+
+@app.route('/api/nodes/task/<task_id>/file', methods=['GET'])
+def node_download_task_file(task_id):
+    """Node downloads the input .mph file for a task."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    user_folder = task.user.get_user_folder()
+    file_path   = Config.UPLOAD_FOLDER / user_folder / task.unique_filename
+    if not file_path.exists():
+        return jsonify({'error': 'Input file not found'}), 404
+
+    return send_file(file_path, as_attachment=True,
+                     download_name=task.unique_filename)
+
+
+@app.route('/api/nodes/task/<task_id>/start', methods=['POST'])
+def node_task_start(task_id):
+    """Node reports it has started executing a task."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    task.mark_started()
+    task.process_id = data.get('process_id')
+    node.status = 'busy'
+    node.current_task_id = task_id
+    db.session.commit()
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/progress', methods=['POST'])
+def node_task_progress(task_id):
+    """Node streams progress updates for a running task."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data       = request.get_json(silent=True) or {}
+    percentage = float(data.get('percentage', task.progress_percentage or 0))
+    step       = data.get('step')
+    task.update_progress(percentage, step)
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/complete', methods=['POST'])
+def node_task_complete(task_id):
+    """Node uploads the result file and marks the task completed."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    if 'result_file' not in request.files:
+        return jsonify({'error': 'No result file uploaded'}), 400
+
+    result_file   = request.files['result_file']
+    user_folder   = task.user.get_user_folder()
+    result_dir    = Config.RESULTS_FOLDER / user_folder
+    result_dir.mkdir(parents=True, exist_ok=True)
+
+    stem            = Path(task.unique_filename).stem
+    result_filename = f"{stem}_solved.mph"
+    result_path     = result_dir / result_filename
+    result_file.save(str(result_path))
+
+    task.mark_completed(result_filename)
+    node.status          = 'online'
+    node.current_task_id = None
+    db.session.commit()
+
+    try:
+        from tasks import update_system_stats
+        update_system_stats.delay()
+    except Exception:
+        pass
+
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/fail', methods=['POST'])
+def node_task_fail(task_id):
+    """Node reports that a task has failed."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data          = request.get_json(silent=True) or {}
+    error_message = data.get('error_message', 'Node reported failure')
+    error_log     = data.get('error_log', '')
+    task.mark_failed(error_message, error_log)
+    node.status          = 'online'
+    node.current_task_id = None
+    db.session.commit()
+
+    try:
+        from tasks import update_system_stats
+        update_system_stats.delay()
+    except Exception:
+        pass
+
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/list')
+@login_required
+@admin_required
+def admin_nodes_list():
+    """Admin API: current node status."""
+    nodes = Node.query.order_by(Node.registered_at).all()
+    return jsonify([n.to_dict() for n in nodes]), 200
+
+
+@app.route('/admin/nodes')
+@login_required
+@admin_required
+def admin_nodes():
+    """Admin: node management page."""
+    nodes = Node.query.order_by(Node.registered_at).all()
+    return render_template('admin/nodes.html', nodes=nodes)
+
+
+@app.route('/admin/nodes/<node_id>/remove', methods=['POST'])
+@login_required
+@admin_required
+def admin_remove_node(node_id):
+    """Admin: remove a node registration."""
+    node = Node.query.get_or_404(node_id)
+    db.session.delete(node)
+    db.session.commit()
+    flash('Node removed.' if g.language == 'en' else '节点已移除。')
+    return redirect(url_for('admin_nodes'))
+
+
+# ---------------------------------------------------------------------------
+# Node-aware task dispatcher — replaces the direct Celery call in upload_file
+# ---------------------------------------------------------------------------
+
+def _dispatch_task(task, upload_path, result_path):
+    """Assign task to an online node that supports the required COMSOL version,
+    falling back to the local Celery worker if none are available."""
+    comsol_ver = task.comsol_version
+
+    # Find an idle node that supports this COMSOL version
+    candidates = Node.query.filter_by(status='online').all()
+    chosen = None
+    for node in candidates:
+        if comsol_ver in node.comsol_versions:
+            chosen = node
+            break
+
+    if chosen:
+        # Assign to node — it will poll and pick it up
+        task.assigned_node_id = chosen.id
+        task.mark_queued()
+        # No Celery task needed; node polls /api/nodes/task/poll
+        return {'mode': 'node', 'node_id': chosen.id, 'node_hostname': chosen.hostname}
+    else:
+        # Fall back to local Celery worker
+        from tasks import run_comsol_simulation
+        celery_task = run_comsol_simulation.apply_async(
+            args=[task.id, str(upload_path), str(result_path)],
+            queue=Config.HIGH_PRIORITY_QUEUE if task.priority == 'high'
+                  else Config.NORMAL_PRIORITY_QUEUE
+        )
+        task.celery_task_id = celery_task.id
+        task.mark_queued()
+        return {'mode': 'local', 'celery_task_id': celery_task.id}
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat monitor — background thread, started once when Flask starts
+# ---------------------------------------------------------------------------
+
+def _start_heartbeat_monitor(flask_app):
+    """Background thread: mark nodes offline if last_seen > 60 s ago."""
+    import threading
+    from datetime import timedelta
+
+    def _monitor():
+        while True:
+            import time
+            time.sleep(30)
+            try:
+                with flask_app.app_context():
+                    cutoff = utcnow() - timedelta(seconds=60)
+                    stale = Node.query.filter(
+                        Node.status != 'offline',
+                        Node.last_seen < cutoff
+                    ).all()
+                    for node in stale:
+                        node.status = 'offline'
+                        # Re-queue any task that was assigned to this node
+                        if node.current_task_id:
+                            stuck = Task.query.get(node.current_task_id)
+                            if stuck and stuck.status in ('queued', 'running'):
+                                stuck.assigned_node_id = None
+                                stuck.status = 'pending'
+                                stuck.started_at = None
+                        node.current_task_id = None
+                    if stale:
+                        db.session.commit()
+            except Exception as exc:
+                # Never crash the monitor thread
+                pass
+
+    t = threading.Thread(target=_monitor, name='heartbeat-monitor', daemon=True)
+    t.start()
+
+
+# Start monitor after first request context is available.
+# We use a flag so it only fires once even in debug reload mode.
+_monitor_started = False
+
+@app.before_request
+def _ensure_monitor_running():
+    global _monitor_started
+    if not _monitor_started:
+        _monitor_started = True
+        _start_heartbeat_monitor(app)
+
 
 if __name__ == '__main__':
     import os as _os

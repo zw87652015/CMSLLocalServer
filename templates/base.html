@@ -85,6 +85,12 @@
                                     {{ g.get_text('task_management') }}
                                 </a>
                             </li>
+                            <li>
+                                <a class="dropdown-item" href="{{ url_for('admin_nodes') }}">
+                                    <i class="fas fa-network-wired" style="width:16px;opacity:.5;"></i>
+                                    {{ 'Node Computers' if g.language == 'en' else '节点计算机' }}
+                                </a>
+                            </li>
                             <li><hr class="dropdown-divider"></li>
                             <li>
                                 <a class="dropdown-item" href="{{ url_for('admin_settings') }}">

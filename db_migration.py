@@ -65,6 +65,34 @@ def migrate_database():
         else:
             print("'server_config' already exists, skipping")
 
+        # Migration 5: create nodes table
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'")
+        if not cursor.fetchone():
+            cursor.execute("""
+                CREATE TABLE nodes (
+                    id                   VARCHAR(36)  PRIMARY KEY NOT NULL,
+                    hostname             VARCHAR(255) NOT NULL,
+                    ip_address           VARCHAR(45)  NOT NULL,
+                    auth_token           VARCHAR(64)  NOT NULL UNIQUE,
+                    comsol_versions_json TEXT         NOT NULL DEFAULT '[]',
+                    cpu_cores            INTEGER      NOT NULL DEFAULT 1,
+                    status               VARCHAR(20)  NOT NULL DEFAULT 'online',
+                    current_task_id      VARCHAR(36),
+                    registered_at        DATETIME,
+                    last_seen            DATETIME
+                )
+            """)
+            print("Created 'nodes' table")
+        else:
+            print("'nodes' already exists, skipping")
+
+        # Migration 6: add assigned_node_id to tasks
+        if not _column_exists(cursor, 'tasks', 'assigned_node_id'):
+            cursor.execute("ALTER TABLE tasks ADD COLUMN assigned_node_id VARCHAR(36) REFERENCES nodes(id)")
+            print("Added 'assigned_node_id' column to tasks table")
+        else:
+            print("'assigned_node_id' already exists, skipping")
+
         conn.commit()
         print("Migration complete.")
 
