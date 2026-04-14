@@ -403,7 +403,7 @@ class NodeClient:
         if return_code == 0 and not ProgressParser.has_error(full_output):
             if output_path.exists():
                 logger.info('Task %s completed. Uploading result ...', task_id)
-                self._report_complete(task_id, output_path)
+                self._report_complete(task_id, output_path, log_text=full_output)
             else:
                 msg = 'COMSOL finished but output file is missing'
                 logger.error(msg)
@@ -472,13 +472,15 @@ class NodeClient:
                 delay = min(delay * 2, 60)
         raise last_exc
 
-    def _report_complete(self, task_id, result_path: Path):
-        # Step 1 — tell the server the task is done (no file yet).
+    def _report_complete(self, task_id, result_path: Path, log_text: str = ''):
+        # Step 1 — tell the server the task is done (and upload log text).
         # This always runs and is retried; status is updated even if
         # the file upload later fails.
+        _LOG_CAP = 2_000_000  # 2 MB of text max
         try:
             self._post_with_retry(f'/api/nodes/task/{task_id}/complete',
-                                  json={'completed': True})
+                                  json={'completed': True,
+                                        'log_text': log_text[-_LOG_CAP:]})
             logger.info('Task %s marked completed on server.', task_id)
         except Exception as exc:
             logger.error('Could not mark task %s complete: %s', task_id, exc)

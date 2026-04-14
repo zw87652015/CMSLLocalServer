@@ -976,11 +976,15 @@ def view_logs(task_id):
     """View task logs"""
     task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
     
-    # Node tasks: no local log file — return error_log stored in DB if available
+    # Node tasks without a saved log file — show status-appropriate message
     if task and task.assigned_node_id and not task.log_filename:
+        if task.status in ('queued', 'pending'):
+            return jsonify({'logs': '[Task is queued and waiting to run on a node computer]'})
+        if task.status == 'running':
+            return jsonify({'logs': '[Task is currently running on node computer — logs will be available after completion]'})
         if task.error_log:
             return jsonify({'logs': task.error_log})
-        return jsonify({'logs': f'[Task ran on node {task.assigned_node_id[:8]}… — no log file was uploaded]'})
+        return jsonify({'logs': '[No log was uploaded for this task]'})
 
     if not task or not task.log_filename:
         return jsonify({'error': 'Log file not found'}), 404
@@ -1188,6 +1192,23 @@ def change_password():
 # Node distribution API
 # ---------------------------------------------------------------------------
 
+def _save_node_log(task, log_text: str):
+    """Write node task output to a log file on the server and set task.log_filename.
+    Best-effort — logs errors but never raises."""
+    try:
+        user_folder  = task.user.get_user_folder()
+        log_dir      = Config.LOGS_FOLDER / user_folder
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stem         = Path(task.unique_filename).stem
+        log_filename = f"{stem}.log"
+        log_path     = log_dir / log_filename
+        with open(log_path, 'w', encoding='utf-8', errors='replace') as fh:
+            fh.write(log_text)
+        task.log_filename = log_filename
+    except Exception as exc:
+        app.logger.error('_save_node_log failed for task %s: %s', task.id, exc)
+
+
 def _node_from_request():
     """Authenticate a node from X-Node-Id / X-Node-Token headers.
     Returns the Node object or None."""
@@ -1374,6 +1395,11 @@ def node_task_complete(task_id):
             app.logger.error('node_task_complete: could not save result file '
                              'for task %s: %s', task_id, exc)
 
+    # ── 3. Save log text if the node included it ──────────────────────────
+    log_text = (request.get_json(silent=True) or {}).get('log_text')
+    if log_text:
+        _save_node_log(task, log_text)
+
     task.mark_completed(result_filename)   # commits status = 'completed'
     node.status          = 'online'
     node.current_task_id = None
@@ -1441,6 +1467,9 @@ def node_task_fail(task_id):
     data          = request.get_json(silent=True) or {}
     error_message = data.get('error_message', 'Node reported failure')
     error_log     = data.get('error_log', '')
+    log_text      = data.get('log_text') or error_log
+    if log_text:
+        _save_node_log(task, log_text)
     task.mark_failed(error_message, error_log)   # commits status = 'failed'
     node.status          = 'online'
     node.current_task_id = None
