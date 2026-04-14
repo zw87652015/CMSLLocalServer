@@ -1,453 +1,345 @@
-// JavaScript for COMSOL Simulation Management System
+// COMSOL Simulation Management System — frontend logic
 
-// Global variables
-let uploadForm = null;
 let tasksRefreshInterval = null;
+let statsRefreshInterval  = null;
 
-// Initialize when DOM is loaded
-document.addEventListener('DOMContentLoaded', function() {
-    uploadForm = document.getElementById('uploadForm');
+document.addEventListener('DOMContentLoaded', function () {
+    const uploadForm = document.getElementById('uploadForm');
     if (uploadForm) {
-        initializeUploadForm();
+        initUploadForm(uploadForm);
     }
-    
-    // Initialize auto-refresh if on index page
     if (document.getElementById('tasksContainer')) {
         startAutoRefresh();
-        // Initial load of tasks to ensure buttons are visible immediately
         refreshTasks();
     }
-    
-    // Apply progress bar widths from data attributes
-    applyProgressBarWidths();
+    applyProgressBars();
 });
 
-// Apply width to progress bars from data-width attribute
-function applyProgressBarWidths() {
-    const progressBars = document.querySelectorAll('.progress-bar[data-width]');
-    progressBars.forEach(bar => {
-        const width = bar.getAttribute('data-width');
-        if (width) {
-            bar.style.width = `${width}%`;
-        }
-    });
+// ─── Progress bars ────────────────────────────────────────────────────────────
+
+function applyProgressBars() {
+    document.querySelectorAll('progress.task-progress-bar').forEach(applyProgressColor);
+    document.querySelectorAll('progress.resource-progress-bar').forEach(applyResourceColor);
 }
 
-// Upload form initialization
-function initializeUploadForm() {
-    uploadForm.addEventListener('submit', handleFileUpload);
-    
-    // Drag and drop functionality
-    const fileInput = document.getElementById('fileInput');
-    
-    uploadForm.addEventListener('dragover', function(e) {
-        e.preventDefault();
-        uploadForm.classList.add('dragover');
-    });
-    
-    uploadForm.addEventListener('dragleave', function(e) {
-        e.preventDefault();
-        uploadForm.classList.remove('dragover');
-    });
-    
-    uploadForm.addEventListener('drop', function(e) {
-        e.preventDefault();
-        uploadForm.classList.remove('dragover');
-        
-        const files = e.dataTransfer.files;
-        if (files.length > 0) {
-            fileInput.files = files;
-            updateFileInputDisplay();
-        }
-    });
-    
-    fileInput.addEventListener('change', updateFileInputDisplay);
+function applyProgressColor(el) {
+    // colours driven by data-status attribute
+    const status = el.dataset.status || '';
+    el.classList.remove('p-success', 'p-danger', 'p-warning', 'p-running');
+    if (status === 'completed') el.classList.add('p-success');
+    else if (status === 'failed')  el.classList.add('p-danger');
+    else if (status === 'running') el.classList.add('p-running');
 }
 
-// Update file input display
-function updateFileInputDisplay() {
+function applyResourceColor(el) {
+    const level = el.dataset.level || 'ok';
+    el.classList.remove('p-ok', 'p-med', 'p-high');
+    el.classList.add('p-' + level);
+}
+
+// ─── Upload form ──────────────────────────────────────────────────────────────
+
+function initUploadForm(form) {
+    form.addEventListener('submit', handleFileUpload);
+
     const fileInput = document.getElementById('fileInput');
-    const fileName = fileInput.files[0]?.name;
-    
-    if (fileName) {
-        // Update label or add visual feedback
-        const label = document.querySelector('label[for="fileInput"]');
-        label.textContent = `已选择: ${fileName}`;
-        label.classList.add('text-success');
+    const dropZone  = document.getElementById('dropZone');
+
+    if (dropZone) {
+        dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+        dropZone.addEventListener('dragleave', e => { e.preventDefault(); dropZone.classList.remove('dragover'); });
+        dropZone.addEventListener('drop', e => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                fileInput.files = e.dataTransfer.files;
+                updateFileLabel(fileInput.files[0].name);
+            }
+        });
+    }
+
+    if (fileInput) {
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files[0]) updateFileLabel(fileInput.files[0].name);
+        });
     }
 }
 
-// Handle file upload
+function updateFileLabel(name) {
+    const label = document.querySelector('label[for="fileInput"]');
+    if (label) {
+        label.textContent = name;
+        label.style.color = 'var(--c-green)';
+    }
+}
+
 async function handleFileUpload(e) {
     e.preventDefault();
-    
-    const formData = new FormData(uploadForm);
-    const submitBtn = uploadForm.querySelector('button[type="submit"]');
+    const form      = e.currentTarget;
+    const submitBtn = form.querySelector('button[type="submit"]');
     const statusDiv = document.getElementById('uploadStatus');
-    
-    // Disable submit button and show loading
+
     submitBtn.disabled = true;
-    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>上传中...';
-    
+    const origHTML = submitBtn.innerHTML;
+    submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> uploading…';
+
     try {
-        const response = await fetch('/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
-        const result = await response.json();
-        
+        const response = await fetch('/upload', { method: 'POST', body: new FormData(form) });
+        const result   = await response.json();
+
         if (response.ok) {
-            statusDiv.innerHTML = `
-                <div class="alert alert-success">
-                    <i class="fas fa-check-circle me-2"></i>
-                    ${result.message}
-                </div>
-            `;
-            
-            // Reset form
-            uploadForm.reset();
-            document.querySelector('label[for="fileInput"]').textContent = '选择 .mph 文件';
-            document.querySelector('label[for="fileInput"]').classList.remove('text-success');
-            
-            // Refresh tasks
-            setTimeout(refreshTasks, 1000);
-            
+            statusDiv.innerHTML = `<div class="alert alert-success">${result.message}</div>`;
+            form.reset();
+            const label = document.querySelector('label[for="fileInput"]');
+            if (label) { label.style.color = ''; label.textContent = label.dataset.default || ''; }
+            setTimeout(() => refreshTasks(true), 900);
         } else {
-            throw new Error(result.error || '上传失败');
+            throw new Error(result.error || 'Upload failed');
         }
-        
-    } catch (error) {
-        statusDiv.innerHTML = `
-            <div class="alert alert-danger">
-                <i class="fas fa-exclamation-triangle me-2"></i>
-                ${error.message}
-            </div>
-        `;
+    } catch (err) {
+        statusDiv.innerHTML = `<div class="alert alert-danger">${err.message}</div>`;
     } finally {
-        // Re-enable submit button
         submitBtn.disabled = false;
-        submitBtn.innerHTML = '<i class="fas fa-upload me-1"></i>上传并开始仿真';
+        submitBtn.innerHTML = origHTML;
     }
 }
 
-// Refresh tasks list
-async function refreshTasks() {
+// ─── Task list ────────────────────────────────────────────────────────────────
+
+async function refreshTasks(silent = false) {
+    const refreshBtn = document.querySelector('button[onclick="refreshTasks()"]');
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    }
     try {
-        // Add visual feedback for refresh button
-        const refreshBtn = document.querySelector('button[onclick="refreshTasks()"]');
-        if (refreshBtn) {
-            const originalHTML = refreshBtn.innerHTML;
-            refreshBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 刷新中...';
-            refreshBtn.disabled = true;
-        }
-        
-        const response = await fetch('/tasks');
-        const tasks = await response.json();
-        
+        const resp  = await fetch('/tasks');
+        const tasks = await resp.json();
         updateTasksTable(tasks);
-        
-        // Restore refresh button
+        if (!silent) showToast('info', 'Refreshed');
+    } catch (err) {
+        console.error('refresh failed', err);
+    } finally {
         if (refreshBtn) {
-            refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 刷新';
             refreshBtn.disabled = false;
+            refreshBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
         }
-        
-        // Show success notification
-        showNotification('任务列表已刷新', 'success');
-        
-    } catch (error) {
-        console.error('Failed to refresh tasks:', error);
-        
-        // Restore refresh button on error
-        const refreshBtn = document.querySelector('button[onclick="refreshTasks()"]');
-        if (refreshBtn) {
-            refreshBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 刷新';
-            refreshBtn.disabled = false;
-        }
-        
-        showNotification('刷新失败: ' + error.message, 'error');
     }
 }
 
-// Update tasks table
 function updateTasksTable(tasks) {
-    const tasksTable = document.getElementById('tasksTable');
-    const tasksContainer = document.getElementById('tasksContainer');
-    
-    if (!tasksTable || !tasksContainer) return;
-    
-    if (tasks.length === 0) {
-        tasksContainer.innerHTML = `
-            <div class="text-center text-muted py-4">
-                <i class="fas fa-inbox fa-3x mb-3"></i>
-                <p>暂无任务记录</p>
-            </div>
-        `;
+    const tbody     = document.getElementById('tasksTable');
+    const container = document.getElementById('tasksContainer');
+    if (!container) return;
+
+    if (!tasks.length) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-inbox d-block"></i>
+                <h6>No tasks yet</h6>
+                <p>Upload a .mph file to get started.</p>
+            </div>`;
         return;
     }
-    
-    tasksTable.innerHTML = tasks.map(task => {
-        const statusBadge = getStatusBadge(task.status);
-        const priorityBadge = getPriorityBadge(task.priority);
-        const progressBar = getProgressBar(task.progress, task.status);
-        const actions = getTaskActions(task);
-        
-        return `
-            <tr>
-                <td>${task.original_filename}</td>
-                <td>${statusBadge}</td>
-                <td>${priorityBadge}</td>
-                <td>${progressBar}</td>
-                <td>${formatDateTime(task.created_at)}</td>
-                <td>${actions}</td>
-            </tr>
-        `;
-    }).join('');
-    
-    // Apply width to progress bars after updating DOM
-    applyProgressBarWidths();
+
+    // If the table doesn't exist yet (was showing empty state), rebuild it
+    if (!tbody) {
+        container.innerHTML = `
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead><tr>
+                        <th>File</th><th>Status</th><th>Priority</th>
+                        <th style="min-width:110px;">Progress</th>
+                        <th>Created</th><th>Actions</th>
+                    </tr></thead>
+                    <tbody id="tasksTable"></tbody>
+                </table>
+            </div>`;
+    }
+
+    const tb = document.getElementById('tasksTable');
+    if (!tb) return;
+
+    tb.innerHTML = tasks.map(task => `
+        <tr>
+            <td style="font-weight:500;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                ${escHtml(task.original_filename)}
+            </td>
+            <td>${statusBadge(task.status)}</td>
+            <td>${priorityBadge(task.priority)}</td>
+            <td>
+                <progress class="task-progress-bar p-${progressClass(task.status)}"
+                          value="${task.progress}"
+                          max="100"
+                          data-status="${task.status}"></progress>
+                <div style="font-size:11px;color:var(--c-text-muted);margin-top:3px;">${task.progress}%</div>
+            </td>
+            <td style="color:var(--c-text-sec);white-space:nowrap;">${formatDate(task.created_at)}</td>
+            <td>${taskActions(task)}</td>
+        </tr>`).join('');
 }
 
-// Get status badge HTML
-function getStatusBadge(status) {
-    const badges = {
-        'pending': 'bg-secondary',
-        'queued': 'bg-warning',
-        'running': 'bg-primary',
-        'completed': 'bg-success',
-        'failed': 'bg-danger',
-        'cancelled': 'bg-dark'
+function progressClass(status) {
+    if (status === 'completed') return 'success';
+    if (status === 'failed')    return 'danger';
+    if (status === 'running')   return 'running';
+    return 'default';
+}
+
+function statusBadge(status) {
+    const map = {
+        pending:   ['bg-secondary', '待处理'],
+        queued:    ['bg-info',      '队列中'],
+        running:   ['bg-warning',   '运行中'],
+        completed: ['bg-success',   '已完成'],
+        failed:    ['bg-danger',    '失败'],
+        cancelled: ['bg-dark',      '已取消'],
     };
-    
-    const statusText = {
-        'pending': '待处理',
-        'queued': '队列中',
-        'running': '运行中',
-        'completed': '已完成',
-        'failed': '失败',
-        'cancelled': '已取消'
-    };
-    
-    return `<span class="badge ${badges[status] || 'bg-secondary'}">${statusText[status] || status}</span>`;
+    const [cls, label] = map[status] || ['bg-secondary', status];
+    return `<span class="badge ${cls}">${label}</span>`;
 }
 
-// Get priority badge HTML
-function getPriorityBadge(priority) {
-    const badge = priority === 'high' ? 'bg-danger' : 'bg-primary';
-    const text = priority === 'high' ? '高优先级' : '普通';
-    return `<span class="badge ${badge}">${text}</span>`;
+function priorityBadge(priority) {
+    return priority === 'high'
+        ? `<span class="badge bg-danger">高优先级</span>`
+        : `<span class="badge bg-secondary">普通</span>`;
 }
 
-// Get progress bar HTML
-function getProgressBar(progress, status) {
-    const isActive = status === 'running';
-    const barClass = status === 'completed' ? 'bg-success' : 
-                    status === 'failed' ? 'bg-danger' : 
-                    isActive ? 'progress-bar-striped progress-bar-animated' : '';
-    
-    return `
-        <div class="progress task-progress">
-            <div class="progress-bar ${barClass}" role="progressbar" 
-                 aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100"
-                 data-width="${progress}">
-                ${progress}%
-            </div>
-        </div>
-    `;
-}
-
-// Get task actions HTML
-function getTaskActions(task) {
-    let actions = '';
-    
+function taskActions(task) {
+    let html = '';
     if (task.download_url) {
-        actions += `
-            <a href="${task.download_url}" class="btn btn-sm btn-success me-1">
-                <i class="fas fa-download"></i>
-            </a>
-        `;
+        html += `<a href="${escHtml(task.download_url)}" class="btn btn-success btn-sm" title="下载"><i class="fas fa-download"></i></a> `;
     }
-    
-    // Cancel button for active tasks
-    if (task.status === 'pending' || task.status === 'queued' || task.status === 'running') {
-        actions += `
-            <button class="btn btn-sm btn-warning me-1" onclick="cancelTask('${task.id}')" title="取消任务">
-                <i class="fas fa-stop"></i>
-            </button>
-        `;
+    if (['pending','queued','running'].includes(task.status)) {
+        html += `<button class="btn btn-warning btn-sm" onclick="cancelTask('${task.id}')" title="取消"><i class="fas fa-stop"></i></button> `;
     }
-    
-    actions += `
-        <button class="btn btn-sm btn-info me-1" onclick="viewLogs('${task.id}')" title="查看日志">
-            <i class="fas fa-file-alt"></i>
-        </button>
-        <button class="btn btn-sm btn-danger" onclick="deleteTask('${task.id}')" title="删除任务">
-            <i class="fas fa-trash"></i>
-        </button>
-    `;
-    
-    return actions;
+    html += `<button class="btn btn-secondary btn-sm" onclick="viewLogs('${task.id}')" title="日志"><i class="fas fa-file-lines"></i></button> `;
+    html += `<button class="btn btn-danger btn-sm" onclick="deleteTask('${task.id}')" title="删除"><i class="fas fa-trash"></i></button>`;
+    return `<div style="display:flex;gap:6px;flex-wrap:wrap;">${html}</div>`;
 }
 
-// Format datetime string
-function formatDateTime(dateString) {
-    const date = new Date(dateString);
-    return date.toLocaleString('zh-CN', {
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit'
+function formatDate(str) {
+    if (!str) return '—';
+    return new Date(str).toLocaleString('zh-CN', {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
     });
 }
 
-// View task logs
+function escHtml(s) {
+    return String(s)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ─── Task actions ─────────────────────────────────────────────────────────────
+
 async function viewLogs(taskId) {
     try {
-        const response = await fetch(`/logs/${taskId}`);
-        const result = await response.json();
-        
-        if (response.ok) {
+        const resp   = await fetch(`/logs/${taskId}`);
+        const result = await resp.json();
+        if (resp.ok) {
             document.getElementById('logContent').textContent = result.logs;
             new bootstrap.Modal(document.getElementById('logModal')).show();
         } else {
-            alert('无法加载日志: ' + result.error);
+            showToast('error', '无法加载日志: ' + result.error);
         }
-        
-    } catch (error) {
-        alert('加载日志失败: ' + error.message);
+    } catch (err) {
+        showToast('error', '加载日志失败: ' + err.message);
     }
 }
 
-// Cancel task
 async function cancelTask(taskId) {
-    if (!confirm('确定要取消这个任务吗？')) {
-        return;
-    }
-    
+    if (!confirm('确定要取消这个任务吗？')) return;
     try {
-        const response = await fetch(`/task/${taskId}/cancel`, {
-            method: 'POST'
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showNotification('任务已取消', 'success');
-            refreshTasks();
-        } else {
-            showNotification('取消任务失败: ' + result.error, 'error');
-        }
-        
-    } catch (error) {
-        showNotification('取消任务失败: ' + error.message, 'error');
+        const resp   = await fetch(`/task/${taskId}/cancel`, { method: 'POST' });
+        const result = await resp.json();
+        if (resp.ok) { showToast('success', '任务已取消'); refreshTasks(); }
+        else          showToast('error', '取消失败: ' + result.error);
+    } catch (err) {
+        showToast('error', '取消失败: ' + err.message);
     }
 }
 
-// Delete task
 async function deleteTask(taskId) {
-    if (!confirm('确定要删除这个任务吗？此操作将删除所有相关文件且无法恢复。')) {
-        return;
-    }
-    
+    if (!confirm('确定要删除这个任务吗？此操作将删除所有相关文件且无法恢复。')) return;
     try {
-        const response = await fetch(`/task/${taskId}/delete`, {
-            method: 'DELETE'
-        });
-        
-        const result = await response.json();
-        
-        if (response.ok) {
-            showNotification('任务已删除', 'success');
-            refreshTasks();
-        } else {
-            showNotification('删除任务失败: ' + result.error, 'error');
-        }
-        
-    } catch (error) {
-        showNotification('删除任务失败: ' + error.message, 'error');
+        const resp   = await fetch(`/task/${taskId}/delete`, { method: 'DELETE' });
+        const result = await resp.json();
+        if (resp.ok) { showToast('success', '任务已删除'); refreshTasks(); }
+        else          showToast('error', '删除失败: ' + result.error);
+    } catch (err) {
+        showToast('error', '删除失败: ' + err.message);
     }
 }
 
-// Update system statistics
+// ─── System stats ─────────────────────────────────────────────────────────────
+
 async function updateSystemStats() {
     try {
-        const response = await fetch('/api/stats');
-        const stats = await response.json();
-        
-        // Update stat numbers
-        const elements = {
-            'pendingTasks': stats.pending_tasks,
-            'runningTasks': stats.running_tasks,
-            'completedToday': stats.completed_today,
-            'failedToday': stats.failed_today
+        const resp  = await fetch('/api/stats');
+        if (!resp.ok) return;
+        const stats = await resp.json();
+        const map = {
+            pendingTasks:   stats.pending_tasks,
+            runningTasks:   stats.running_tasks,
+            completedToday: stats.completed_today,
+            failedToday:    stats.failed_today,
         };
-        
-        Object.entries(elements).forEach(([id, value]) => {
-            const element = document.getElementById(id);
-            if (element) {
-                element.textContent = value || 0;
-            }
+        Object.entries(map).forEach(([id, val]) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val ?? 0;
         });
-        
-    } catch (error) {
-        console.error('Failed to update system stats:', error);
-    }
+    } catch (_) { /* silent — stats are non-critical */ }
 }
 
-// Start auto-refresh for tasks and stats
+// ─── Auto-refresh ─────────────────────────────────────────────────────────────
+
 function startAutoRefresh() {
-    // Refresh tasks every 10 seconds
-    tasksRefreshInterval = setInterval(refreshTasks, 10000);
-    
-    // Update stats every 5 seconds
-    setInterval(updateSystemStats, 5000);
-    
-    // Initial load
+    clearInterval(tasksRefreshInterval);
+    clearInterval(statsRefreshInterval);
+    tasksRefreshInterval = setInterval(() => refreshTasks(true), 10000);
+    statsRefreshInterval  = setInterval(updateSystemStats, 5000);
     updateSystemStats();
 }
 
-// Stop auto-refresh (useful when navigating away)
 function stopAutoRefresh() {
-    if (tasksRefreshInterval) {
-        clearInterval(tasksRefreshInterval);
-        tasksRefreshInterval = null;
-    }
+    clearInterval(tasksRefreshInterval);
+    tasksRefreshInterval = null;
+    clearInterval(statsRefreshInterval);
+    statsRefreshInterval = null;
 }
 
-// Utility function to show notifications
-function showNotification(message, type = 'info') {
-    const alertClass = {
-        'success': 'alert-success',
-        'error': 'alert-danger',
-        'warning': 'alert-warning',
-        'info': 'alert-info'
-    };
-    
-    const notification = document.createElement('div');
-    notification.className = `alert ${alertClass[type]} alert-dismissible fade show position-fixed`;
-    notification.style.cssText = 'top: 20px; right: 20px; z-index: 9999; min-width: 300px;';
-    notification.innerHTML = `
-        ${message}
-        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-    `;
-    
-    document.body.appendChild(notification);
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-        if (notification.parentNode) {
-            notification.remove();
-        }
-    }, 5000);
-}
-
-// Handle page visibility change to pause/resume auto-refresh
-document.addEventListener('visibilitychange', function() {
+document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         stopAutoRefresh();
     } else if (document.getElementById('tasksContainer')) {
         startAutoRefresh();
     }
 });
+
+// ─── Toast notifications ──────────────────────────────────────────────────────
+
+function showToast(type, message) {
+    const toast = document.createElement('div');
+    toast.className = `n-toast ${type}`;
+    toast.innerHTML = `<span class="n-dot"></span><span>${escHtml(message)}</span>`;
+    document.body.appendChild(toast);
+
+    // Stack toasts vertically
+    const existing = document.querySelectorAll('.n-toast');
+    let offset = 70;
+    existing.forEach(t => { if (t !== toast) offset += t.offsetHeight + 8; });
+    toast.style.top = offset + 'px';
+
+    setTimeout(() => {
+        toast.style.transition = 'opacity 0.2s';
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 220);
+    }, 3500);
+}
+
+// Legacy alias used by base template (flash messages auto-dismiss)
+function showNotification(message, type = 'info') {
+    showToast(type === 'error' ? 'error' : type, message);
+}

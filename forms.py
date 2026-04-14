@@ -11,7 +11,7 @@ class LoginForm(FlaskForm):
 
 class RegistrationForm(FlaskForm):
     username = StringField('用户名', validators=[DataRequired(), Length(min=3, max=20)])
-    password = PasswordField('密码', validators=[DataRequired(), Length(min=6)])
+    password = PasswordField('密码', validators=[DataRequired(), Length(min=8)])
     submit = SubmitField('注册')
     
     def validate_username(self, username):
@@ -21,7 +21,7 @@ class RegistrationForm(FlaskForm):
 
 class ChangePasswordForm(FlaskForm):
     current_password = PasswordField('当前密码', validators=[DataRequired()])
-    new_password = PasswordField('新密码', validators=[DataRequired(), Length(min=6)])
+    new_password = PasswordField('新密码', validators=[DataRequired(), Length(min=8)])
     confirm_password = PasswordField('确认新密码', validators=[
         DataRequired(), 
         EqualTo('new_password', message='两次输入的密码不一致')

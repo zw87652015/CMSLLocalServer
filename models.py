@@ -1,10 +1,36 @@
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import UserMixin
-from werkzeug.security import generate_password_hash, check_password_hash
-from datetime import datetime
+import logging
+import os
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
+from flask_login import UserMixin
+from flask_sqlalchemy import SQLAlchemy
+from werkzeug.security import generate_password_hash, check_password_hash
+
+logger = logging.getLogger(__name__)
 db = SQLAlchemy()
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+def _remove_file(path):
+    """Remove a file, logging a warning on failure instead of raising."""
+    try:
+        os.remove(path)
+    except Exception as exc:
+        logger.warning("Failed to delete %s: %s", path, exc)
+
+
+def _remove_with_sidecars(base_path):
+    """Remove a file and its .recovery / .status sidecars if they exist."""
+    _remove_file(base_path)
+    for suffix in ('.recovery', '.status'):
+        sidecar = Path(str(base_path) + suffix)
+        if sidecar.exists():
+            _remove_file(sidecar)
 
 class User(UserMixin, db.Model):
     __tablename__ = 'users'
@@ -14,8 +40,9 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    must_change_password = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=utcnow)
+    last_seen = db.Column(db.DateTime, default=utcnow)
     
     # Relationship to tasks
     tasks = db.relationship('Task', backref='user', lazy=True, cascade='all, delete-orphan')
@@ -29,8 +56,8 @@ class User(UserMixin, db.Model):
         return check_password_hash(self.password_hash, password)
     
     def get_user_folder(self):
-        """Get user-specific folder path"""
-        return f"user_{self.username}"
+        """Get user-specific folder path (UUID-based, stable across username changes)"""
+        return f"user_{self.id}"
     
     def is_administrator(self):
         """Check if user is admin"""
@@ -66,7 +93,7 @@ class Task(db.Model):
     comsol_version = db.Column(db.String(10), default='6.3')  # COMSOL version (6.2, 6.3, etc.)
     
     # Timestamps
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utcnow)
     queued_at = db.Column(db.DateTime)
     started_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
@@ -76,7 +103,7 @@ class Task(db.Model):
     current_step = db.Column(db.String(255))
     
     # Execution details
-    celery_task_id = db.Column(db.String(255))
+    celery_task_id = db.Column(db.String(255), unique=True)
     process_id = db.Column(db.Integer)  # COMSOL process ID for cancellation
     execution_time = db.Column(db.Float)  # in seconds
     queue_time = db.Column(db.Float)  # in seconds
@@ -108,19 +135,19 @@ class Task(db.Model):
     
     def mark_queued(self):
         self.status = 'queued'
-        self.queued_at = datetime.utcnow()
+        self.queued_at = utcnow()
         if self.created_at:
             self.queue_time = (self.queued_at - self.created_at).total_seconds()
         db.session.commit()
     
     def mark_started(self):
         self.status = 'running'
-        self.started_at = datetime.utcnow()
+        self.started_at = utcnow()
         db.session.commit()
     
     def mark_completed(self, result_filename=None):
         self.status = 'completed'
-        self.completed_at = datetime.utcnow()
+        self.completed_at = utcnow()
         self.progress_percentage = 100.0
         if result_filename:
             self.result_filename = result_filename
@@ -130,7 +157,7 @@ class Task(db.Model):
     
     def mark_failed(self, error_message=None, error_log=None):
         self.status = 'failed'
-        self.completed_at = datetime.utcnow()
+        self.completed_at = utcnow()
         if error_message:
             self.error_message = error_message
         if error_log:
@@ -142,7 +169,7 @@ class Task(db.Model):
     def mark_cancelled(self):
         """Mark task as cancelled"""
         self.status = 'cancelled'
-        self.completed_at = datetime.utcnow()
+        self.completed_at = utcnow()
         if self.started_at:
             self.execution_time = (self.completed_at - self.started_at).total_seconds()
         db.session.commit()
@@ -154,93 +181,39 @@ class Task(db.Model):
     def cleanup_files(self):
         """Clean up associated files when task is deleted"""
         from config import Config
-        import os
-        from pathlib import Path
-        
-        # Clean up upload file (stored in user-specific folder)
+
+        user_folder = self.user.get_user_folder()
+
+        # Upload file
         if self.unique_filename:
-            user_folder = self.user.get_user_folder()
             upload_path = Config.UPLOAD_FOLDER / user_folder / self.unique_filename
             if upload_path.exists():
-                try:
-                    os.remove(upload_path)
-                except Exception:
-                    pass
-        
-        # Clean up result file and its related files (.mph.recovery, .mph.status)
+                _remove_file(upload_path)
+
+        # Result file and sidecars
         if self.result_filename:
-            user_folder = self.user.get_user_folder()
             result_path = Config.RESULTS_FOLDER / user_folder / self.result_filename
-            
-            # Remove main result file
             if result_path.exists():
-                try:
-                    os.remove(result_path)
-                except Exception:
-                    pass
-            
-            # Remove recovery file (.mph.recovery)
-            recovery_path = Path(str(result_path) + '.recovery')
-            if recovery_path.exists():
-                try:
-                    os.remove(recovery_path)
-                except Exception:
-                    pass
-            
-            # Remove status file (.mph.status)
-            status_path = Path(str(result_path) + '.status')
-            if status_path.exists():
-                try:
-                    os.remove(status_path)
-                except Exception:
-                    pass
-        
-        # Also check for result files based on unique_filename pattern (for failed tasks)
-        # Pattern: {unique_filename_stem}_solved.mph
+                _remove_with_sidecars(result_path)
+
+        # Derived result path for failed tasks: {stem}_solved.mph
         if self.unique_filename:
-            user_folder = self.user.get_user_folder()
-            unique_stem = Path(self.unique_filename).stem
-            result_pattern = f"{unique_stem}_solved.mph"
-            result_path = Config.RESULTS_FOLDER / user_folder / result_pattern
-            
-            # Remove main result file
-            if result_path.exists():
-                try:
-                    os.remove(result_path)
-                except Exception:
-                    pass
-            
-            # Remove recovery file (.mph.recovery)
-            recovery_path = Path(str(result_path) + '.recovery')
-            if recovery_path.exists():
-                try:
-                    os.remove(recovery_path)
-                except Exception:
-                    pass
-            
-            # Remove status file (.mph.status)
-            status_path = Path(str(result_path) + '.status')
-            if status_path.exists():
-                try:
-                    os.remove(status_path)
-                except Exception:
-                    pass
-        
-        # Clean up log file
+            stem = Path(self.unique_filename).stem
+            derived_path = Config.RESULTS_FOLDER / user_folder / f"{stem}_solved.mph"
+            if derived_path.exists():
+                _remove_with_sidecars(derived_path)
+
+        # Log file
         if self.log_filename:
-            user_folder = self.user.get_user_folder()
             log_path = Config.LOGS_FOLDER / user_folder / self.log_filename
             if log_path.exists():
-                try:
-                    os.remove(log_path)
-                except Exception:
-                    pass
+                _remove_file(log_path)
 
 class SystemStats(db.Model):
     __tablename__ = 'system_stats'
     
     id = db.Column(db.Integer, primary_key=True)
-    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    timestamp = db.Column(db.DateTime, default=utcnow)
     
     # Queue statistics
     pending_tasks = db.Column(db.Integer, default=0)

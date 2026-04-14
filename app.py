@@ -1,9 +1,14 @@
 import os
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
 from pathlib import Path
 from flask import Flask, request, render_template, jsonify, send_file, session, redirect, url_for, flash, g
+from urllib.parse import urlparse
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 import unicodedata
@@ -44,11 +49,11 @@ def create_admin_user():
     """Create default admin user if it doesn't exist"""
     admin = User.query.filter_by(username='admin').first()
     if not admin:
-        admin = User(username='admin', is_admin=True)
-        admin.set_password('admin123')  # Default password - should be changed
+        admin = User(username='admin', is_admin=True, must_change_password=True)
+        admin.set_password('admin123')
         db.session.add(admin)
         db.session.commit()
-        
+
         # Create admin directories
         user_folder = admin.get_user_folder()
         folder_mapping = {
@@ -59,8 +64,8 @@ def create_admin_user():
         for folder_type, base_folder in folder_mapping.items():
             folder_path = base_folder / user_folder
             folder_path.mkdir(parents=True, exist_ok=True)
-        
-        print("Admin user created: username='admin', password='admin123'")
+
+        print("Admin user created. Please log in and change the default password immediately.")
 
 def admin_required(f):
     """Decorator to require admin privileges"""
@@ -475,7 +480,10 @@ def set_language(language):
     """Set language preference"""
     if language in ['zh', 'en']:
         session['language'] = language
-    return redirect(request.referrer or url_for('index'))
+    referrer = request.referrer
+    if referrer and urlparse(referrer).netloc == '':
+        return redirect(referrer)
+    return redirect(url_for('index'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -488,10 +496,15 @@ def login():
         user = User.query.filter_by(username=form.username.data).first()
         if user and user.check_password(form.password.data):
             login_user(user)
-            user.last_seen = datetime.utcnow()
+            user.last_seen = utcnow()
             db.session.commit()
+            if user.must_change_password:
+                flash('首次登录请修改默认密码。')
+                return redirect(url_for('change_password'))
             next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('index'))
+            if next_page and urlparse(next_page).netloc == '':
+                return redirect(next_page)
+            return redirect(url_for('index'))
         flash('用户名或密码错误')
     return render_template('login.html', form=form)
 
@@ -873,6 +886,7 @@ def queue_status():
                          stats=stats)
 
 @app.route('/api/stats')
+@login_required
 def api_stats():
     """API endpoint for system statistics"""
     from datetime import date
@@ -1076,8 +1090,9 @@ def change_password():
         try:
             # Update password
             current_user.set_password(form.new_password.data)
+            current_user.must_change_password = False
             db.session.commit()
-            
+
             flash('密码修改成功！', 'success')
             return redirect(url_for('index'))
             
@@ -1088,4 +1103,6 @@ def change_password():
     return render_template('change_password.html', form=form)
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    import os as _os
+    debug = _os.environ.get('FLASK_DEBUG', 'false').lower() in ('1', 'true', 'yes')
+    app.run(debug=debug, host='0.0.0.0', port=5000)

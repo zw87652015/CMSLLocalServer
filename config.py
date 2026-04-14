@@ -7,6 +7,16 @@ class Config:
     
     # Flask configuration
     SECRET_KEY = os.environ.get('SECRET_KEY')
+    if not SECRET_KEY:
+        import warnings
+        SECRET_KEY = os.urandom(32).hex()
+        warnings.warn(
+            "SECRET_KEY environment variable is not set. "
+            "A random key has been generated — sessions will be invalidated on every restart. "
+            "Set SECRET_KEY in your environment for production use.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     
     # Database configuration
     SQLALCHEMY_DATABASE_URI = f"sqlite:///{BASE_DIR / 'database.db'}"

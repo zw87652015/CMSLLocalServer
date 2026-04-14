@@ -1,147 +1,117 @@
 {% extends "base.html" %}
-
-{% block title %}{{ g.get_text('manage_tasks') }} - {{ g.get_text('title') }}{% endblock %}
+{% block title %}{{ g.get_text('manage_tasks') }} — {{ g.get_text('title') }}{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-12">
-        <h2><i class="fas fa-tasks me-2"></i>{{ g.get_text('manage_tasks') }}</h2>
-        <hr>
-    </div>
-</div>
+<div class="page-title">{{ g.get_text('manage_tasks') }}</div>
 
-<div class="row">
-    <div class="col-12">
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">{{ g.get_text('all_tasks') }}</h5>
-                <span class="badge bg-primary">{{ g.get_text('total_tasks_count') }} {{ tasks|length }} {{ g.get_text('tasks_count') }}</span>
+<!-- Summary cards -->
+{% set completed_n = tasks|selectattr('status','equalto','completed')|list|length %}
+{% set running_n   = tasks|selectattr('status','in',['running','queued'])|list|length %}
+{% set failed_n    = tasks|selectattr('status','equalto','failed')|list|length %}
+
+<div class="row g-3 mb-4">
+    <div class="col-sm-4">
+        <div class="metric-card">
+            <div class="metric-icon green"><i class="fas fa-check"></i></div>
+            <div class="metric-body">
+                <div class="metric-value">{{ completed_n }}</div>
+                <div class="metric-label">{{ g.get_text('completed') }}</div>
             </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-hover table-sm">
-                        <thead>
-                            <tr>
-                                <th>{{ g.get_text('task_id') }}</th>
-                                <th>{{ g.get_text('user') }}</th>
-                                <th>{{ g.get_text('filename') }}</th>
-                                <th>{{ g.get_text('status') }}</th>
-                                <th>{{ g.get_text('priority') }}</th>
-                                <th>{{ g.get_text('progress') }}</th>
-                                <th>{{ g.get_text('created_time') }}</th>
-                                <th>{{ g.get_text('execution_time') }}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for task in tasks %}
-                            <tr>
-                                <td>
-                                    <code>{{ task.id[:8] }}...</code>
-                                </td>
-                                <td>
-                                    <i class="fas fa-user me-1"></i>{{ task.user.username }}
-                                </td>
-                                <td>
-                                    <i class="fas fa-file me-1"></i>{{ task.original_filename }}
-                                </td>
-                                <td>
-                                    {% if task.status == 'pending' %}
-                                        <span class="badge bg-secondary">{{ g.get_text('pending') }}</span>
-                                    {% elif task.status == 'queued' %}
-                                        <span class="badge bg-info">{{ g.get_text('queued') }}</span>
-                                    {% elif task.status == 'running' %}
-                                        <span class="badge bg-warning">{{ g.get_text('running') }}</span>
-                                    {% elif task.status == 'completed' %}
-                                        <span class="badge bg-success">{{ g.get_text('completed') }}</span>
-                                    {% elif task.status == 'failed' %}
-                                        <span class="badge bg-danger">{{ g.get_text('failed') }}</span>
-                                    {% elif task.status == 'cancelled' %}
-                                        <span class="badge bg-dark">{{ g.get_text('cancelled') }}</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if task.priority == 'high' %}
-                                        <span class="badge bg-danger">{{ g.get_text('high') }}</span>
-                                    {% else %}
-                                        <span class="badge bg-secondary">{{ g.get_text('normal_priority') }}</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    <div class="progress" style="width: 80px; height: 20px;">
-                                        <div class="progress-bar" role="progressbar" 
-                                             style="width: {{ task.progress_percentage }}%"
-                                             aria-valuenow="{{ task.progress_percentage }}" 
-                                             aria-valuemin="0" aria-valuemax="100">
-                                            {{ "%.0f"|format(task.progress_percentage) }}%
-                                        </div>
-                                    </div>
-                                </td>
-                                <td>{{ task.created_at.strftime('%m-%d %H:%M') }}</td>
-                                <td>
-                                    {% if task.execution_time %}
-                                        {{ "%.1f"|format(task.execution_time) }}s
-                                    {% else %}
-                                        -
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
+        </div>
+    </div>
+    <div class="col-sm-4">
+        <div class="metric-card">
+            <div class="metric-icon orange"><i class="fas fa-spinner"></i></div>
+            <div class="metric-body">
+                <div class="metric-value">{{ running_n }}</div>
+                <div class="metric-label">{{ g.get_text('in_progress') }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-sm-4">
+        <div class="metric-card">
+            <div class="metric-icon" style="background:rgba(220,53,69,0.1);color:var(--c-red);"><i class="fas fa-xmark"></i></div>
+            <div class="metric-body">
+                <div class="metric-value">{{ failed_n }}</div>
+                <div class="metric-label">{{ g.get_text('failed') }}</div>
             </div>
         </div>
     </div>
 </div>
 
-<div class="row mt-4">
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h6><i class="fas fa-chart-pie me-2"></i>{{ g.get_text('task_status_statistics') }}</h6>
-            </div>
-            <div class="card-body">
-                {% set status_counts = {} %}
+<!-- All tasks table -->
+<div class="card">
+    <div class="card-header">
+        <i class="fas fa-tasks" style="color:var(--c-blue);font-size:14px;"></i>
+        <h5>{{ g.get_text('all_tasks') }}</h5>
+        <span class="badge bg-secondary ms-auto">{{ tasks|length }}</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>{{ g.get_text('task_id') }}</th>
+                    <th>{{ g.get_text('user') }}</th>
+                    <th>{{ g.get_text('filename') }}</th>
+                    <th>{{ g.get_text('status') }}</th>
+                    <th>{{ g.get_text('priority') }}</th>
+                    <th style="min-width:100px;">{{ g.get_text('progress') }}</th>
+                    <th>{{ g.get_text('created_time') }}</th>
+                    <th>{{ g.get_text('execution_time') }}</th>
+                </tr>
+            </thead>
+            <tbody>
                 {% for task in tasks %}
-                    {% if status_counts.update({task.status: status_counts.get(task.status, 0) + 1}) %}{% endif %}
+                <tr>
+                    <td>
+                        <code>{{ task.id[:8] }}</code>
+                    </td>
+                    <td style="white-space:nowrap;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <div style="width:24px;height:24px;border-radius:50%;background:var(--c-bg-warm);border:1px solid var(--c-border);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:var(--c-text-sec);flex-shrink:0;">
+                                {{ task.user.username[0]|upper }}
+                            </div>
+                            {{ task.user.username }}
+                        </div>
+                    </td>
+                    <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;">
+                        {{ task.original_filename }}
+                    </td>
+                    <td>
+                        {% set sc = {'pending':'bg-secondary','queued':'bg-info','running':'bg-warning','completed':'bg-success','failed':'bg-danger','cancelled':'bg-dark'} %}
+                        <span class="badge {{ sc.get(task.status, 'bg-secondary') }}">
+                            {{ g.get_text('completed') if task.status == 'completed' else
+                               g.get_text('failed') if task.status == 'failed' else
+                               g.get_text('running') if task.status == 'running' else
+                               g.get_text('cancelled') if task.status == 'cancelled' else
+                               g.get_text('queued') if task.status == 'queued' else
+                               g.get_text('pending_status') }}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="badge {{ 'bg-danger' if task.priority == 'high' else 'bg-secondary' }}">
+                            {{ g.get_text('high') if task.priority == 'high' else g.get_text('normal') }}
+                        </span>
+                    </td>
+                    <td>
+                        <progress class="task-progress-bar"
+                                  value="{{ task.progress_percentage|int }}"
+                                  max="100"
+                                  data-status="{{ task.status }}"></progress>
+                        <div style="font-size:11px;color:var(--c-text-muted);margin-top:2px;">
+                            {{ "%.0f"|format(task.progress_percentage) }}%
+                        </div>
+                    </td>
+                    <td style="color:var(--c-text-sec);font-size:13px;white-space:nowrap;">
+                        {{ task.created_at.strftime('%m-%d %H:%M') }}
+                    </td>
+                    <td style="color:var(--c-text-sec);font-size:13px;white-space:nowrap;">
+                        {{ "%.1f"|format(task.execution_time) ~ 's' if task.execution_time else '—' }}
+                    </td>
+                </tr>
                 {% endfor %}
-                
-                <div class="row text-center">
-                    <div class="col-4">
-                        <h5 class="text-success">{{ status_counts.get('completed', 0) }}</h5>
-                        <small>{{ g.get_text('completed') }}</small>
-                    </div>
-                    <div class="col-4">
-                        <h5 class="text-warning">{{ status_counts.get('running', 0) + status_counts.get('queued', 0) }}</h5>
-                        <small>{{ g.get_text('in_progress') }}</small>
-                    </div>
-                    <div class="col-4">
-                        <h5 class="text-danger">{{ status_counts.get('failed', 0) }}</h5>
-                        <small>{{ g.get_text('failed') }}</small>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-md-6">
-        <div class="card">
-            <div class="card-header">
-                <h6><i class="fas fa-info-circle me-2"></i>{{ g.get_text('system_information') }}</h6>
-            </div>
-            <div class="card-body">
-                <p><strong>{{ g.get_text('total_task_count') }}:</strong> {{ tasks|length }}</p>
-                <p><strong>{{ g.get_text('active_users') }}:</strong> {{ tasks|map(attribute='user')|unique|list|length }}</p>
-                <p><strong>{{ g.get_text('average_execution_time') }}:</strong> 
-                    {% set completed_tasks = tasks|selectattr('execution_time')|list %}
-                    {% if completed_tasks %}
-                        {{ "%.1f"|format(completed_tasks|map(attribute='execution_time')|sum / completed_tasks|length) }}s
-                    {% else %}
-                        {{ g.get_text('no_data') }}
-                    {% endif %}
-                </p>
-            </div>
-        </div>
+            </tbody>
+        </table>
     </div>
 </div>
 {% endblock %}

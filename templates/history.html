@@ -1,126 +1,132 @@
 {% extends "base.html" %}
-
-{% block title %}{{ g.get_text('history') }} - {{ g.get_text('title') }}{% endblock %}
+{% block title %}{{ g.get_text('history') }} — {{ g.get_text('title') }}{% endblock %}
 
 {% block content %}
+<div class="page-title">{{ g.get_text('task_history') }}</div>
+
 <div class="card">
-    <div class="card-header">
-        <h5><i class="fas fa-history me-2"></i>{{ g.get_text('task_history') }}</h5>
+    {% if tasks %}
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>{{ g.get_text('filename') }}</th>
+                    <th>{{ g.get_text('status') }}</th>
+                    <th>{{ g.get_text('priority') }}</th>
+                    <th style="min-width:100px;">{{ g.get_text('progress') }}</th>
+                    <th>{{ g.get_text('created_time') }}</th>
+                    <th>{{ g.get_text('completion_time') }}</th>
+                    <th>{{ g.get_text('execution_time') }}</th>
+                    <th>{{ g.get_text('actions') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for task in tasks %}
+                <tr>
+                    <td style="font-weight:500;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        {{ task.original_filename }}
+                    </td>
+                    <td>
+                        {% set sc = {'completed':'bg-success','failed':'bg-danger','running':'bg-warning','queued':'bg-info','cancelled':'bg-dark'} %}
+                        <span class="badge {{ sc.get(task.status, 'bg-secondary') }}">
+                            {{ g.get_text('completed') if task.status == 'completed' else
+                               g.get_text('failed') if task.status == 'failed' else
+                               g.get_text('running') if task.status == 'running' else
+                               g.get_text('cancelled') if task.status == 'cancelled' else
+                               g.get_text('queued') if task.status == 'queued' else
+                               g.get_text('pending_status') }}
+                        </span>
+                    </td>
+                    <td>
+                        <span class="badge {{ 'bg-danger' if task.priority == 'high' else 'bg-secondary' }}">
+                            {{ g.get_text('high') if task.priority == 'high' else g.get_text('normal') }}
+                        </span>
+                    </td>
+                    <td>
+                        <progress class="task-progress-bar"
+                                  value="{{ task.progress_percentage|int }}"
+                                  max="100"
+                                  data-status="{{ task.status }}"></progress>
+                        <div style="font-size:11px;color:var(--c-text-muted);margin-top:2px;">
+                            {{ task.progress_percentage|int }}%
+                        </div>
+                    </td>
+                    <td style="color:var(--c-text-sec);white-space:nowrap;font-size:13px;">
+                        {{ task.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    </td>
+                    <td style="color:var(--c-text-sec);white-space:nowrap;font-size:13px;">
+                        {{ task.completed_at.strftime('%Y-%m-%d %H:%M') if task.completed_at else '—' }}
+                    </td>
+                    <td style="color:var(--c-text-sec);white-space:nowrap;font-size:13px;">
+                        {{ "%.1f"|format(task.execution_time) ~ 's' if task.execution_time else '—' }}
+                    </td>
+                    <td>
+                        <div style="display:flex;gap:6px;">
+                            {% if task.result_filename %}
+                            <a href="{{ url_for('download_result', task_id=task.id) }}"
+                               class="btn btn-success btn-sm" title="{{ g.get_text('download') }}">
+                                <i class="fas fa-download"></i>
+                            </a>
+                            {% endif %}
+                            <button class="btn btn-secondary btn-sm"
+                                    onclick="viewLogs('{{ task.id }}')"
+                                    title="{{ g.get_text('logs') }}">
+                                <i class="fas fa-file-lines"></i>
+                            </button>
+                            {% if task.error_message %}
+                            <button class="btn btn-danger btn-sm"
+                                    onclick="showError('{{ task.error_message|e }}')"
+                                    title="{{ g.get_text('error_info') }}">
+                                <i class="fas fa-triangle-exclamation"></i>
+                            </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
-    <div class="card-body">
-        {% if tasks %}
-            <div class="table-responsive">
-                <table class="table table-hover">
-                    <thead>
-                        <tr>
-                            <th>{{ g.get_text('filename') }}</th>
-                            <th>{{ g.get_text('status') }}</th>
-                            <th>{{ g.get_text('priority') }}</th>
-                            <th>{{ g.get_text('progress') }}</th>
-                            <th>{{ g.get_text('created_time') }}</th>
-                            <th>{{ g.get_text('completion_time') }}</th>
-                            <th>{{ g.get_text('execution_time') }}</th>
-                            <th>{{ g.get_text('actions') }}</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for task in tasks %}
-                        <tr>
-                            <td>{{ task.original_filename }}</td>
-                            <td>
-                                <span class="badge bg-{{ 'success' if task.status == 'completed' else 'danger' if task.status == 'failed' else 'warning' if task.status == 'running' else 'secondary' }}">
-                                    {{ g.get_text('completed') if task.status == 'completed' else g.get_text('failed') if task.status == 'failed' else g.get_text('running') if task.status == 'running' else g.get_text('cancelled') if task.status == 'cancelled' else g.get_text('queued') if task.status == 'queued' else g.get_text('pending_status') }}
-                                </span>
-                            </td>
-                            <td>
-                                <span class="badge bg-{{ 'danger' if task.priority == 'high' else 'primary' }}">
-                                    {{ g.get_text('high') if task.priority == 'high' else g.get_text('normal') }}
-                                </span>
-                            </td>
-                            <td>
-                                <div class="progress task-progress">
-                                    <div class="progress-bar bg-{{ 'success' if task.status == 'completed' else 'danger' if task.status == 'failed' else 'warning' }}" 
-                                         role="progressbar" aria-valuenow="{{ task.progress_percentage }}" aria-valuemin="0" aria-valuemax="100"
-                                         data-width="{{ task.progress_percentage }}">
-                                        {{ task.progress_percentage }}%
-                                    </div>
-                                </div>
-                            </td>
-                            <td>{{ task.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                            <td>
-                                {% if task.completed_at %}
-                                    {{ task.completed_at.strftime('%Y-%m-%d %H:%M:%S') }}
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if task.execution_time %}
-                                    {{ "%.1f"|format(task.execution_time) }}s
-                                {% else %}
-                                    -
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if task.result_filename %}
-                                <a href="{{ url_for('download_result', task_id=task.id) }}" class="btn btn-sm btn-success me-1">
-                                    <i class="fas fa-download"></i>
-                                </a>
-                                {% endif %}
-                                <button class="btn btn-sm btn-info" onclick="viewLogs('{{ task.id }}')">
-                                    <i class="fas fa-file-alt"></i>
-                                </button>
-                                {% if task.error_message %}
-                                <button class="btn btn-sm btn-danger ms-1" onclick="showError('{{ task.error_message }}')">
-                                    <i class="fas fa-exclamation-triangle"></i>
-                                </button>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        {% else %}
-            <div class="text-center text-muted py-5">
-                <i class="fas fa-inbox fa-4x mb-3"></i>
-                <h5>{{ g.get_text('no_history') }}</h5>
-                <p>{{ g.get_text('no_tasks_submitted') }}</p>
-                <a href="{{ url_for('index') }}" class="btn btn-primary">
-                    <i class="fas fa-upload me-1"></i>{{ g.get_text('upload_first_file') }}
-                </a>
-            </div>
-        {% endif %}
+    {% else %}
+    <div class="empty-state" style="padding:64px 24px;">
+        <i class="fas fa-inbox d-block"></i>
+        <h6>{{ g.get_text('no_history') }}</h6>
+        <p>{{ g.get_text('no_tasks_submitted') }}</p>
+        <a href="{{ url_for('index') }}" class="btn btn-primary" style="margin-top:16px;">
+            <i class="fas fa-upload"></i>
+            {{ g.get_text('upload_first_file') }}
+        </a>
     </div>
+    {% endif %}
 </div>
 
 <!-- Log Modal -->
-<div class="modal fade" id="logModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
+<div class="modal fade" id="logModal" tabindex="-1" aria-labelledby="logModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">{{ g.get_text('task_logs') }}</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <span class="modal-title" id="logModalLabel">{{ g.get_text('task_logs') }}</span>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">
-                <pre id="logContent" class="bg-dark text-light p-3 log-content"></pre>
+            <div class="modal-body" style="padding:0 !important;">
+                <pre id="logContent" class="log-content" style="border-radius:0 !important;max-height:520px;"></pre>
             </div>
         </div>
     </div>
 </div>
 
 <!-- Error Modal -->
-<div class="modal fade" id="errorModal" tabindex="-1">
+<div class="modal fade" id="errorModal" tabindex="-1" aria-labelledby="errorModalLabel" aria-hidden="true">
     <div class="modal-dialog">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title text-danger">
-                    <i class="fas fa-exclamation-triangle me-2"></i>{{ g.get_text('error_info') }}
-                </h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <span class="modal-title" id="errorModalLabel" style="color:var(--c-red);">
+                    <i class="fas fa-triangle-exclamation me-2"></i>{{ g.get_text('error_info') }}
+                </span>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <div id="errorContent" class="alert alert-danger"></div>
+                <div id="errorContent" class="alert alert-danger" style="margin:0;"></div>
             </div>
         </div>
     </div>

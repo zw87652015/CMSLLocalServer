@@ -1,7 +1,6 @@
 import os
 import re
 import subprocess
-import os
 from datetime import datetime
 from pathlib import Path
 from celery.app import Celery
@@ -82,7 +81,7 @@ class ProgressParser:
                 return True
         return False
 
-@celery.task(bind=True)
+@celery.task(bind=True, time_limit=Config.TASK_TIMEOUT, soft_time_limit=Config.TASK_TIMEOUT - 60)
 def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
     """
     Execute COMSOL® simulation task
@@ -191,7 +190,7 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                     # Update system statistics after task completion
                     try:
                         update_system_stats.delay()
-                    except:
+                    except Exception:
                         pass  # Don't fail the main task if stats update fails
                     return {
                         'status': 'completed',
@@ -211,7 +210,7 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                 # Update system statistics after task failure
                 try:
                     update_system_stats.delay()
-                except:
+                except Exception:
                     pass  # Don't fail the main task if stats update fails
                 raise Exception(error_msg)
                 
@@ -226,28 +225,35 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                 if 'log_file_path' in locals():
                     with open(log_file_path, 'a', encoding='utf-8') as log_file:
                         log_file.write(f"\nERROR: {error_msg}\n")
-            except:
+            except Exception:
                 pass
             
             raise e
 
 @celery.task
 def cleanup_old_files():
-    """Clean up old result and log files"""
+    """Clean up old result/log files and prune stale SystemStats rows"""
     import time
     from pathlib import Path
-    
+    from datetime import datetime, timezone, timedelta
+
     # Clean files older than 7 days
     cutoff_time = time.time() - (7 * 24 * 60 * 60)
-    
+
     for folder in [Config.RESULTS_FOLDER, Config.LOGS_FOLDER]:
         if folder.exists():
-            for file_path in folder.iterdir():
+            for file_path in folder.rglob('*'):
                 if file_path.is_file() and file_path.stat().st_mtime < cutoff_time:
                     try:
                         file_path.unlink()
                     except Exception as e:
                         print(f"Failed to delete {file_path}: {e}")
+
+    # Prune SystemStats rows older than 7 days to prevent unbounded table growth
+    with app.app_context():
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(days=7)
+        SystemStats.query.filter(SystemStats.timestamp < cutoff_dt).delete()
+        db.session.commit()
 
 @celery.task
 def kill_comsol_process(process_id):
@@ -280,41 +286,53 @@ def kill_comsol_process(process_id):
 @celery.task
 def process_next_queued_task():
     """Process the next queued task after a cancellation"""
-    from app import create_app
-    app = create_app()
-    
     with app.app_context():
-        # Find the next pending task
-        next_task = Task.query.filter(
+        # Find the next pending task and atomically claim it to avoid race conditions.
+        # We UPDATE status to 'queued' only where it is still 'pending', then verify
+        # the rowcount to ensure exactly one worker claimed this task.
+        candidate = Task.query.filter(
             Task.status.in_(['pending', 'queued'])
         ).order_by(Task.created_at).first()
-        
-        if next_task:
-            # Start the next task
-            input_file_path = Config.UPLOAD_FOLDER / next_task.user.get_user_folder() / next_task.unique_filename
-            
-            # Generate output filename
-            stem = Path(next_task.unique_filename).stem
-            output_filename = f"{stem}_solved.mph"
-            output_file_path = Config.RESULTS_FOLDER / next_task.user.get_user_folder() / output_filename
-            
-            # Ensure results directory exists
-            output_file_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Submit the task to Celery
-            celery_task = run_comsol_simulation.delay(
-                next_task.id,
-                str(input_file_path),
-                str(output_file_path)
-            )
-            
-            # Update task with Celery task ID
-            next_task.celery_task_id = celery_task.id
-            db.session.commit()
-            
-            return f"Started next queued task: {next_task.id}"
-        
-        return "No queued tasks to process"
+
+        if not candidate:
+            return "No queued tasks to process"
+
+        rows_updated = (
+            db.session.query(Task)
+            .filter(Task.id == candidate.id, Task.status.in_(['pending', 'queued']))
+            .update({'status': 'queued'}, synchronize_session=False)
+        )
+        db.session.commit()
+
+        if rows_updated == 0:
+            # Another worker claimed the task first
+            return "Task already claimed by another worker"
+
+        next_task = Task.query.get(candidate.id)
+
+        # Start the next task
+        input_file_path = Config.UPLOAD_FOLDER / next_task.user.get_user_folder() / next_task.unique_filename
+
+        # Generate output filename
+        stem = Path(next_task.unique_filename).stem
+        output_filename = f"{stem}_solved.mph"
+        output_file_path = Config.RESULTS_FOLDER / next_task.user.get_user_folder() / output_filename
+
+        # Ensure results directory exists
+        output_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Submit the task to Celery
+        celery_task = run_comsol_simulation.delay(
+            next_task.id,
+            str(input_file_path),
+            str(output_file_path)
+        )
+
+        # Update task with Celery task ID
+        next_task.celery_task_id = celery_task.id
+        db.session.commit()
+
+        return f"Started next queued task: {next_task.id}"
 
 @celery.task
 def update_system_stats():
@@ -352,7 +370,8 @@ def update_system_stats():
             Task.execution_time.isnot(None)
         ).all()
         
-        avg_queue_time = sum(t.queue_time for t in recent_tasks if t.queue_time) / len(recent_tasks) if recent_tasks else 0
+        tasks_with_queue_time = [t for t in recent_tasks if t.queue_time]
+        avg_queue_time = sum(t.queue_time for t in tasks_with_queue_time) / len(tasks_with_queue_time) if tasks_with_queue_time else 0
         avg_execution_time = sum(t.execution_time for t in recent_tasks) / len(recent_tasks) if recent_tasks else 0
         
         # Create new stats record

@@ -1,55 +1,54 @@
 {% extends "base.html" %}
-
-{% block title %}{{ g.get_text('register') }} - {{ g.get_text('title') }}{% endblock %}
+{% block title %}{{ g.get_text('register') }} — {{ g.get_text('title') }}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
-    <div class="col-md-6 col-lg-4">
-        <div class="card shadow">
-            <div class="card-header bg-success text-white text-center">
-                <h4><i class="fas fa-user-plus me-2"></i>{{ g.get_text('user_registration') }}</h4>
-            </div>
-            <div class="card-body">
-                <form method="POST">
-                    {{ form.hidden_tag() }}
-                    
-                    <div class="mb-3">
-                        <label class="form-label">{{ g.get_text('username_label') }}</label>
-                        {{ form.username(class="form-control") }}
-                        {% if form.username.errors %}
-                            <div class="text-danger small">
-                                {% for error in form.username.errors %}
-                                    <div>{{ error }}</div>
-                                {% endfor %}
-                            </div>
-                        {% endif %}
-                        <div class="form-text">{{ g.get_text('username_length') }}</div>
-                    </div>
-                    
-                    <div class="mb-3">
-                        <label class="form-label">{{ g.get_text('password_label') }}</label>
-                        {{ form.password(class="form-control") }}
-                        {% if form.password.errors %}
-                            <div class="text-danger small">
-                                {% for error in form.password.errors %}
-                                    <div>{{ error }}</div>
-                                {% endfor %}
-                            </div>
-                        {% endif %}
-                        <div class="form-text">{{ g.get_text('password_length') }}</div>
-                    </div>
-                    
-                    <div class="d-grid">
-                        <button type="submit" class="btn btn-primary">{{ g.get_text('register_submit') }}</button>
-                    </div>
-                </form>
-                
-                <hr>
-                <div class="text-center">
-                    <p class="mb-0">{{ g.get_text('have_account') }} <a href="{{ url_for('login') }}">{{ g.get_text('login_now') }}</a></p>
+<div class="col-md-5 col-lg-4">
+
+    <div style="text-align:center;margin-bottom:28px;">
+        <div style="font-size:24px;font-weight:700;letter-spacing:-0.5px;color:var(--c-text);">
+            {{ g.get_text('user_registration') }}
+        </div>
+        <div style="font-size:14px;color:var(--c-text-muted);margin-top:6px;">
+            {{ g.get_text('title') }}
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body" style="padding:28px !important;">
+            <form method="POST">
+                {{ form.hidden_tag() }}
+
+                <div class="mb-4">
+                    <label class="form-label" for="username">{{ g.get_text('username_label') }}</label>
+                    {{ form.username(class="form-control", id="username", placeholder=g.get_text('username_label')) }}
+                    <div class="form-text">{{ g.get_text('username_length') }}</div>
+                    {% for error in form.username.errors %}
+                        <div class="text-danger" style="font-size:13px;margin-top:4px;">{{ error }}</div>
+                    {% endfor %}
                 </div>
+
+                <div class="mb-5">
+                    <label class="form-label" for="password">{{ g.get_text('password_label') }}</label>
+                    {{ form.password(class="form-control", id="password", placeholder="••••••••") }}
+                    <div class="form-text">{{ g.get_text('password_length') }}</div>
+                    {% for error in form.password.errors %}
+                        <div class="text-danger" style="font-size:13px;margin-top:4px;">{{ error }}</div>
+                    {% endfor %}
+                </div>
+
+                <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;">
+                    {{ g.get_text('register_submit') }}
+                </button>
+            </form>
+
+            <div style="text-align:center;margin-top:20px;font-size:14px;color:var(--c-text-muted);">
+                {{ g.get_text('have_account') }}
+                <a href="{{ url_for('login') }}" style="font-weight:500;">{{ g.get_text('login_now') }}</a>
             </div>
         </div>
     </div>
+
+</div>
 </div>
 {% endblock %}

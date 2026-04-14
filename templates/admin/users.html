@@ -1,94 +1,92 @@
 {% extends "base.html" %}
-
-{% block title %}{{ g.get_text('manage_users') }} - {{ g.get_text('title') }}{% endblock %}
+{% block title %}{{ g.get_text('manage_users') }} — {{ g.get_text('title') }}{% endblock %}
 
 {% block content %}
-<div class="row">
-    <div class="col-12">
-        <h2><i class="fas fa-users me-2"></i>{{ g.get_text('manage_users') }}</h2>
-        <hr>
-    </div>
-</div>
+<div class="page-title">{{ g.get_text('manage_users') }}</div>
 
-<div class="row">
-    <div class="col-12">
-        <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">{{ g.get_text('all_users') }}</h5>
-                <span class="badge bg-primary">{{ g.get_text('total_users_count') }} {{ users|length }} {{ g.get_text('users_count') }}</span>
-            </div>
-            <div class="card-body">
-                <div class="table-responsive">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>{{ g.get_text('username') }}</th>
-                                <th>{{ g.get_text('role') }}</th>
-                                <th>{{ g.get_text('status') }}</th>
-                                <th>{{ g.get_text('registration_time') }}</th>
-                                <th>{{ g.get_text('last_login') }}</th>
-                                <th>{{ g.get_text('task_count') }}</th>
-                                <th>{{ g.get_text('actions') }}</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for user in users %}
-                            <tr>
-                                <td>
-                                    <i class="fas fa-user me-2"></i>{{ user.username }}
-                                </td>
-                                <td>
-                                    {% if user.is_admin %}
-                                        <span class="badge bg-warning text-dark">{{ g.get_text('administrator') }}</span>
-                                    {% else %}
-                                        <span class="badge bg-secondary">{{ g.get_text('normal_user') }}</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if user.is_active %}
-                                        <span class="badge bg-success">{{ g.get_text('active') }}</span>
-                                    {% else %}
-                                        <span class="badge bg-danger">{{ g.get_text('disabled') }}</span>
-                                    {% endif %}
-                                </td>
-                                <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                                <td>{{ user.last_seen.strftime('%Y-%m-%d %H:%M') if user.last_seen else g.get_text('never_logged_in') }}</td>
-                                <td>
-                                    <span class="badge bg-info">{{ user.tasks|length }}</span>
-                                </td>
-                                <td>
-                                    {% if user.username != 'admin' %}
-                                        <div class="btn-group btn-group-sm" role="group">
-                                            <form method="POST" action="{{ url_for('admin_toggle_user', user_id=user.id) }}" class="d-inline">
-                                                {% if user.is_active %}
-                                                    <button type="submit" class="btn btn-warning btn-sm" 
-                                                            onclick="return confirm('{{ g.get_text('confirm_disable_user') }} {{ user.username }}?');">
-                                                        <i class="fas fa-ban"></i> {{ g.get_text('disable_user') }}
-                                                    </button>
-                                                {% else %}
-                                                    <button type="submit" class="btn btn-success btn-sm">
-                                                        <i class="fas fa-check"></i> {{ g.get_text('enable_user') }}
-                                                    </button>
-                                                {% endif %}
-                                            </form>
-                                            <form method="POST" action="{{ url_for('admin_delete_user', user_id=user.id) }}" class="d-inline">
-                                                <button type="submit" class="btn btn-danger btn-sm" 
-                                                        onclick="return confirm('{{ g.get_text('confirm_delete_user') }} {{ user.username }} {{ g.get_text('delete_warning') }}');">
-                                                    <i class="fas fa-trash"></i> {{ g.get_text('delete_user') }}
-                                                </button>
-                                            </form>
-                                        </div>
-                                    {% else %}
-                                        <span class="text-muted">{{ g.get_text('system_admin') }}</span>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
+<div class="card">
+    <div class="card-header">
+        <i class="fas fa-users" style="color:var(--c-blue);font-size:14px;"></i>
+        <h5>{{ g.get_text('all_users') }}</h5>
+        <span class="badge bg-secondary ms-auto">{{ users|length }}</span>
+    </div>
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>{{ g.get_text('username') }}</th>
+                    <th>{{ g.get_text('role') }}</th>
+                    <th>{{ g.get_text('status') }}</th>
+                    <th>{{ g.get_text('registration_time') }}</th>
+                    <th>{{ g.get_text('last_login') }}</th>
+                    <th>{{ g.get_text('task_count') }}</th>
+                    <th>{{ g.get_text('actions') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>
+                        <div style="display:flex;align-items:center;gap:10px;">
+                            <div style="width:30px;height:30px;border-radius:50%;background:var(--c-bg-warm);border:1px solid var(--c-border);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:var(--c-text-sec);flex-shrink:0;">
+                                {{ user.username[0]|upper }}
+                            </div>
+                            <span style="font-weight:500;">{{ user.username }}</span>
+                        </div>
+                    </td>
+                    <td>
+                        {% if user.is_admin %}
+                            <span class="badge admin-pill">{{ g.get_text('administrator') }}</span>
+                        {% else %}
+                            <span class="badge bg-secondary">{{ g.get_text('normal_user') }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if user.is_active %}
+                            <span class="badge bg-success">{{ g.get_text('active') }}</span>
+                        {% else %}
+                            <span class="badge bg-danger">{{ g.get_text('disabled') }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="color:var(--c-text-sec);font-size:13px;white-space:nowrap;">
+                        {{ user.created_at.strftime('%Y-%m-%d %H:%M') }}
+                    </td>
+                    <td style="color:var(--c-text-sec);font-size:13px;white-space:nowrap;">
+                        {{ user.last_seen.strftime('%Y-%m-%d %H:%M') if user.last_seen else g.get_text('never_logged_in') }}
+                    </td>
+                    <td>
+                        <span class="badge bg-primary">{{ user.tasks|length }}</span>
+                    </td>
+                    <td>
+                        {% if user.username != 'admin' %}
+                        <div style="display:flex;gap:6px;">
+                            <form method="POST" action="{{ url_for('admin_toggle_user', user_id=user.id) }}" style="margin:0;">
+                                {% if user.is_active %}
+                                    <button type="submit" class="btn btn-warning btn-sm"
+                                            onclick="return confirm('{{ g.get_text('confirm_disable_user') }} {{ user.username }}?');">
+                                        <i class="fas fa-ban"></i> {{ g.get_text('disable_user') }}
+                                    </button>
+                                {% else %}
+                                    <button type="submit" class="btn btn-success btn-sm">
+                                        <i class="fas fa-check"></i> {{ g.get_text('enable_user') }}
+                                    </button>
+                                {% endif %}
+                            </form>
+                            <form method="POST" action="{{ url_for('admin_delete_user', user_id=user.id) }}" style="margin:0;">
+                                <button type="submit" class="btn btn-danger btn-sm"
+                                        onclick="return confirm('{{ g.get_text('confirm_delete_user') }} {{ user.username }} {{ g.get_text('delete_warning') }}');">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </form>
+                        </div>
+                        {% else %}
+                            <span style="font-size:13px;color:var(--c-text-muted);">{{ g.get_text('system_admin') }}</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
 </div>
 {% endblock %}

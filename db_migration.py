@@ -1,53 +1,66 @@
 #!/usr/bin/env python3
 """
-Database migration script to add comsol_version column to tasks table
+Database migration script
 """
 
-import sqlite3
 import os
+import sqlite3
 from pathlib import Path
 
+
+def _column_exists(cursor, table, column):
+    cursor.execute(f"PRAGMA table_info({table})")
+    return any(row[1] == column for row in cursor.fetchall())
+
+
 def migrate_database():
-    """Add comsol_version column to existing tasks table"""
-    
-    # Database path
+    """Apply all pending schema migrations"""
     db_path = Path(__file__).parent / 'database.db'
-    
+
     if not db_path.exists():
         print("Database file not found. No migration needed.")
         return
-    
+
+    conn = sqlite3.connect(db_path)
     try:
-        # Connect to database
-        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
-        # Check if column already exists
-        cursor.execute("PRAGMA table_info(tasks)")
-        columns = [column[1] for column in cursor.fetchall()]
-        
-        if 'comsol_version' in columns:
-            print("Column 'comsol_version' already exists. No migration needed.")
-            return
-        
-        # Add the new column
-        cursor.execute("ALTER TABLE tasks ADD COLUMN comsol_version VARCHAR(10) DEFAULT '6.3'")
-        
-        # Update existing tasks to have default version
-        cursor.execute("UPDATE tasks SET comsol_version = '6.3' WHERE comsol_version IS NULL")
-        
-        # Commit changes
+
+        # Migration 1: add comsol_version to tasks
+        if not _column_exists(cursor, 'tasks', 'comsol_version'):
+            cursor.execute("ALTER TABLE tasks ADD COLUMN comsol_version VARCHAR(10) DEFAULT '6.3'")
+            cursor.execute("UPDATE tasks SET comsol_version = '6.3' WHERE comsol_version IS NULL")
+            print("Added 'comsol_version' column to tasks table")
+        else:
+            print("'comsol_version' already exists, skipping")
+
+        # Migration 2: add must_change_password to users
+        if not _column_exists(cursor, 'users', 'must_change_password'):
+            cursor.execute("ALTER TABLE users ADD COLUMN must_change_password BOOLEAN NOT NULL DEFAULT 0")
+            print("Added 'must_change_password' column to users table")
+        else:
+            print("'must_change_password' already exists, skipping")
+
+        # Migration 3: rename user_<username> folders to user_<id>
+        base = Path(__file__).parent
+        cursor.execute("SELECT id, username FROM users")
+        users = cursor.fetchall()
+        for user_id, username in users:
+            for sub in ('uploads', 'results', 'logs'):
+                old_folder = base / sub / f"user_{username}"
+                new_folder = base / sub / f"user_{user_id}"
+                if old_folder.exists() and not new_folder.exists():
+                    os.rename(old_folder, new_folder)
+                    print(f"Renamed {old_folder} -> {new_folder}")
+
         conn.commit()
-        print("✅ Successfully added 'comsol_version' column to tasks table")
-        print("✅ Set default COMSOL version 6.3 for existing tasks")
-        
+        print("Migration complete.")
+
     except sqlite3.Error as e:
-        print(f"❌ Database error: {e}")
+        print(f"Database error: {e}")
         conn.rollback()
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
     finally:
         conn.close()
+
 
 if __name__ == "__main__":
     migrate_database()
