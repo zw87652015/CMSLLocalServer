@@ -77,6 +77,24 @@ POLL_INTERVAL      = 5    # seconds between task polls when idle
 PROGRESS_INTERVAL  = 5    # seconds between progress reports to server
 
 
+def _get_cpu_model() -> str:
+    """Return the friendly CPU model name as shown in Windows System Settings."""
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r'HARDWARE\DESCRIPTION\System\CentralProcessor\0'
+        )
+        name, _ = winreg.QueryValueEx(key, 'ProcessorNameString')
+        winreg.CloseKey(key)
+        return name.strip()
+    except Exception:
+        pass
+    # Fallback for non-Windows
+    import platform
+    return platform.processor() or platform.machine()
+
+
 def _disk_free_gb() -> float:
     """Return free disk space (GB) on the drive where node_workdir lives."""
     try:
@@ -190,11 +208,10 @@ class NodeClient:
     # Registration
     # ------------------------------------------------------------------
     def register(self):
-        import platform
         hostname        = socket.gethostname()
         comsol_versions = detect_comsol_versions(self.comsol_paths)
         cpu_cores       = multiprocessing.cpu_count()
-        cpu_model       = platform.processor() or None
+        cpu_model       = _get_cpu_model()
 
         if not comsol_versions:
             logger.warning(

@@ -1336,20 +1336,27 @@ def node_heartbeat():
     if not node:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    data       = request.get_json(silent=True) or {}
-    new_status = data.get('status', 'online')   # 'online' | 'busy' | 'offline'
-    was_offline = node.status == 'offline'
+    data        = request.get_json(silent=True) or {}
+    new_status  = data.get('status', 'online')   # 'online' | 'busy' | 'offline'
+    prev_status = node.status
     if new_status in ('online', 'busy', 'offline'):
         node.status = new_status
     disk_free = data.get('disk_free_gb')
     if disk_free is not None:
         node.disk_free_gb = float(disk_free)
     node.touch()
+    if new_status == 'offline':
+        node.current_task_id = None
     actions = node.pending_actions   # snapshot before commit
     db.session.commit()
-    # If a previously-offline node just came back online, assign waiting tasks
-    if was_offline and new_status == 'online':
+
+    if new_status == 'offline' and prev_status != 'offline':
+        # Node just went offline — immediately re-pend its tasks
+        _repend_tasks_for_offline_nodes([node.id])
+    elif prev_status == 'offline' and new_status == 'online':
+        # Node came back online — dispatch waiting tasks to it
         _dispatch_pending_node_tasks()
+
     return jsonify({'ok': True, 'pending_actions': actions}), 200
 
 
@@ -1755,6 +1762,24 @@ def _dispatch_task(task, upload_path, result_path):
 
 
 # ---------------------------------------------------------------------------
+def _repend_tasks_for_offline_nodes(node_ids: list):
+    """Re-pend any running/queued tasks whose assigned node just went offline,
+    then try to dispatch them to remaining online nodes."""
+    if not node_ids:
+        return
+    orphaned = Task.query.filter(
+        Task.status.in_(['queued', 'running']),
+        Task.assigned_node_id.in_(node_ids),
+    ).all()
+    for stuck in orphaned:
+        stuck.assigned_node_id = None
+        stuck.status = 'pending'
+        stuck.started_at = None
+    if orphaned:
+        db.session.commit()
+    _dispatch_pending_node_tasks()
+
+
 # Heartbeat monitor — background thread, started once when Flask starts
 # ---------------------------------------------------------------------------
 
@@ -1783,25 +1808,9 @@ def _start_heartbeat_monitor(flask_app):
                         node.current_task_id = None
 
                     if stale:
-                        db.session.commit()
-
-                        # Re-queue ALL running/queued tasks whose assigned node
-                        # is now offline (catches both current_task_id and any
-                        # tasks claimed but not yet reflected in current_task_id)
                         stale_ids = [n.id for n in stale]
-                        orphaned = Task.query.filter(
-                            Task.status.in_(['queued', 'running']),
-                            Task.assigned_node_id.in_(stale_ids),
-                        ).all()
-                        for stuck in orphaned:
-                            stuck.assigned_node_id = None
-                            stuck.status = 'pending'
-                            stuck.started_at = None
-                        if orphaned:
-                            db.session.commit()
-
-                        # Reassign re-queued tasks to any remaining online nodes
-                        _dispatch_pending_node_tasks()
+                        db.session.commit()
+                        _repend_tasks_for_offline_nodes(stale_ids)
             except Exception as exc:
                 # Never crash the monitor thread
                 pass
