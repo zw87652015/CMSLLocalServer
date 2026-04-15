@@ -21,10 +21,16 @@ def _localtime(dt, fmt='%Y-%m-%d %H:%M'):
     """Convert a UTC datetime (aware or naive) to server local time and format it."""
     if dt is None:
         return '—'
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    local_dt = dt.astimezone(datetime.now().astimezone().tzinfo)
-    return local_dt.strftime(fmt)
+    try:
+        import calendar
+        if dt.tzinfo is not None:
+            ts = dt.timestamp()
+        else:
+            # Naive datetime stored as UTC → convert to Unix timestamp
+            ts = calendar.timegm(dt.timetuple())
+        return datetime.fromtimestamp(ts).strftime(fmt)
+    except Exception:
+        return str(dt)
 
 def create_app():
     app = Flask(__name__)
