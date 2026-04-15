@@ -1075,49 +1075,42 @@ def cancel_task(task_id):
         return jsonify({'error': f'Task cannot be cancelled (status: {task.status})'}), 400
     
     try:
+        # Mark cancelled FIRST so any concurrent dispatch check sees the correct
+        # status immediately (avoids a race where local_running > 0 blocks dispatch).
+        task.mark_cancelled()
+
         # Revoke the Celery reservation so the task won't start if it hasn't yet.
         # Do NOT use terminate=True — on Windows that sends os.kill() which requires
         # admin rights and crashes the worker.  The COMSOL process is killed below
         # via psutil, which is sufficient.
         if task.celery_task_id:
-            from tasks import run_comsol_simulation, process_next_queued_task, kill_comsol_process
+            from tasks import run_comsol_simulation
             celery_task = run_comsol_simulation.AsyncResult(task.celery_task_id)
             celery_task.revoke(terminate=False)
-        
+
         # Kill the COMSOL process immediately (synchronously)
         if task.process_id:
             try:
                 import psutil
-                # Kill the process and all its children immediately
                 parent = psutil.Process(task.process_id)
                 children = parent.children(recursive=True)
-                
-                # Kill children first
                 for child in children:
                     try:
                         child.kill()
                     except psutil.NoSuchProcess:
                         pass
-                
-                # Kill parent process
                 try:
                     parent.kill()
                 except psutil.NoSuchProcess:
                     pass
-                    
             except Exception as e:
-                # Log the error but don't fail the cancellation
                 print(f"Warning: Failed to kill COMSOL process {task.process_id}: {e}")
-        
-        # Mark task as cancelled in database
-        task.mark_cancelled()
 
         # Tell the node to delete its local copy of the result file
         _push_node_delete_action(task)
 
-        # Start the next queued task after a brief delay
-        from tasks import process_next_queued_task
-        process_next_queued_task.apply_async(countdown=3)
+        # Dispatch any waiting tasks immediately (handles both nodes and local Celery).
+        _dispatch_pending_node_tasks()
         
         return jsonify({
             'success': True,
@@ -1195,8 +1188,7 @@ def delete_task(task_id):
         db.session.commit()
         
         if was_active:
-            from tasks import process_next_queued_task
-            process_next_queued_task.apply_async(countdown=3)
+            _dispatch_pending_node_tasks()
         
         return jsonify({
             'success': True,
