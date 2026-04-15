@@ -68,11 +68,11 @@
               <span style="color:var(--c-text-sec);font-size:12px;">—</span>
             {% endfor %}
           </td>
-          <td>
-            <div style="font-size:13px;font-weight:500;">{{ node.cpu_cores }} {{ 'cores' if g.language == 'en' else '核' }}</div>
+          <td style="min-width:200px;max-width:280px;">
             {% if node.cpu_model %}
-            <div style="font-size:11px;color:var(--c-text-sec);margin-top:2px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ node.cpu_model }}">{{ node.cpu_model }}</div>
+            <div style="font-size:13px;line-height:1.4;word-break:break-word;">{{ node.cpu_model }}</div>
             {% endif %}
+            <div style="font-size:12px;color:var(--c-text-sec);margin-top:3px;">{{ node.cpu_cores }} {{ 'cores' if g.language == 'en' else '核' }}</div>
           </td>
           <td style="font-size:13px;">
             {% if node.disk_free_gb is not none and node.disk_free_gb != none %}
