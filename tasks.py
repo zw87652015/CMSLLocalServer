@@ -301,11 +301,18 @@ def kill_comsol_process(process_id):
 def process_next_queued_task():
     """Process the next queued task after a cancellation"""
     with app.app_context():
-        # Find the next pending task and atomically claim it to avoid race conditions.
-        # We UPDATE status to 'queued' only where it is still 'pending', then verify
-        # the rowcount to ensure exactly one worker claimed this task.
+        # Do not start a new local task if one is already running locally.
+        local_running = Task.query.filter_by(
+            status='running', assigned_node_id=None
+        ).count()
+        if local_running > 0:
+            return "A local task is already running"
+
+        # Find the next pending/queued task that has no node assigned
+        # (node-assigned tasks are handled by the node poll endpoint).
         candidate = Task.query.filter(
-            Task.status.in_(['pending', 'queued'])
+            Task.status.in_(['pending', 'queued']),
+            Task.assigned_node_id.is_(None),
         ).order_by(Task.created_at).first()
 
         if not candidate:
@@ -313,7 +320,11 @@ def process_next_queued_task():
 
         rows_updated = (
             db.session.query(Task)
-            .filter(Task.id == candidate.id, Task.status.in_(['pending', 'queued']))
+            .filter(
+                Task.id == candidate.id,
+                Task.status.in_(['pending', 'queued']),
+                Task.assigned_node_id.is_(None),
+            )
             .update({'status': 'queued'}, synchronize_session=False)
         )
         db.session.commit()

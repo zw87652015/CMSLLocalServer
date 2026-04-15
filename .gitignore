@@ -60,3 +60,7 @@ Thumbs.db
 Tree.txt
 GoalsOfProject.txt
 migrate_*.py
+
+node_workdir/
+
+.claude/
