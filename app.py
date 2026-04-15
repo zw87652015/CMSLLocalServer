@@ -1423,8 +1423,28 @@ def node_download_task_file(task_id):
     if not file_path.exists():
         return jsonify({'error': 'Input file not found'}), 404
 
-    return send_file(file_path, as_attachment=True,
-                     download_name=task.unique_filename)
+    # Stream with 4 MB chunks to avoid Werkzeug's 8 KB default block size,
+    # which causes Nagle+delayed-ACK stalls on Windows LAN (~200 ms per chunk).
+    file_size = file_path.stat().st_size
+    CHUNK = 4 * 1024 * 1024
+
+    def _stream():
+        with open(file_path, 'rb') as fh:
+            while True:
+                data = fh.read(CHUNK)
+                if not data:
+                    break
+                yield data
+
+    from flask import Response as _Response
+    return _Response(
+        _stream(),
+        headers={
+            'Content-Disposition': f'attachment; filename="{task.unique_filename}"',
+            'Content-Length':      str(file_size),
+            'Content-Type':        'application/octet-stream',
+        }
+    )
 
 
 @app.route('/api/nodes/task/<task_id>/start', methods=['POST'])

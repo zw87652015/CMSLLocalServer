@@ -371,9 +371,10 @@ class NodeClient:
             logger.info('Downloading input file ...')
             resp = self._get(input_url, stream=True, timeout=120)
             resp.raise_for_status()
+            resp.raw.decode_content = True
             with open(input_path, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                    f.write(chunk)
+                import shutil as _shutil
+                _shutil.copyfileobj(resp.raw, f, length=4 * 1024 * 1024)
             logger.info('Input file saved: %s', input_path)
         except Exception as exc:
             self._report_fail(task_id, f'Failed to download input file: {exc}', '')
