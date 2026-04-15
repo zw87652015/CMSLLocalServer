@@ -43,7 +43,8 @@
           <th>{{ 'Hostname' if g.language == 'en' else '主机名' }}</th>
           <th>{{ 'IP Address' if g.language == 'en' else 'IP 地址' }}</th>
           <th>{{ 'COMSOL Versions' if g.language == 'en' else 'COMSOL 版本' }}</th>
-          <th>{{ 'CPU Cores' if g.language == 'en' else 'CPU 核心' }}</th>
+          <th>{{ 'CPU' if g.language == 'en' else 'CPU' }}</th>
+          <th>{{ 'Disk Free' if g.language == 'en' else '磁盘剩余' }}</th>
           <th>{{ g.get_text('status') }}</th>
           <th>{{ 'Current Task' if g.language == 'en' else '当前任务' }}</th>
           <th>{{ 'Last Seen' if g.language == 'en' else '最后活跃' }}</th>
@@ -67,7 +68,19 @@
               <span style="color:var(--c-text-sec);font-size:12px;">—</span>
             {% endfor %}
           </td>
-          <td>{{ node.cpu_cores }}</td>
+          <td>
+            <div style="font-size:13px;font-weight:500;">{{ node.cpu_cores }} {{ 'cores' if g.language == 'en' else '核' }}</div>
+            {% if node.cpu_model %}
+            <div style="font-size:11px;color:var(--c-text-sec);margin-top:2px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ node.cpu_model }}">{{ node.cpu_model }}</div>
+            {% endif %}
+          </td>
+          <td style="font-size:13px;">
+            {% if node.disk_free_gb is not none and node.disk_free_gb != none %}
+              {{ "%.1f"|format(node.disk_free_gb) }} GB
+            {% else %}
+              <span style="color:var(--c-text-sec);">—</span>
+            {% endif %}
+          </td>
           <td>
             {% if node.status == 'online' %}
               <span class="badge bg-success">{{ 'Online' if g.language == 'en' else '在线' }}</span>

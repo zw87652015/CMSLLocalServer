@@ -1771,16 +1771,26 @@ def _start_heartbeat_monitor(flask_app):
                     ).all()
                     for node in stale:
                         node.status = 'offline'
-                        # Re-queue any task that was assigned to this node
-                        if node.current_task_id:
-                            stuck = Task.query.get(node.current_task_id)
-                            if stuck and stuck.status in ('queued', 'running'):
-                                stuck.assigned_node_id = None
-                                stuck.status = 'pending'
-                                stuck.started_at = None
                         node.current_task_id = None
+
                     if stale:
                         db.session.commit()
+
+                        # Re-queue ALL running/queued tasks whose assigned node
+                        # is now offline (catches both current_task_id and any
+                        # tasks claimed but not yet reflected in current_task_id)
+                        stale_ids = [n.id for n in stale]
+                        orphaned = Task.query.filter(
+                            Task.status.in_(['queued', 'running']),
+                            Task.assigned_node_id.in_(stale_ids),
+                        ).all()
+                        for stuck in orphaned:
+                            stuck.assigned_node_id = None
+                            stuck.status = 'pending'
+                            stuck.started_at = None
+                        if orphaned:
+                            db.session.commit()
+
                         # Reassign re-queued tasks to any remaining online nodes
                         _dispatch_pending_node_tasks()
             except Exception as exc:
