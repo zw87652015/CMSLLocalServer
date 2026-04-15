@@ -1708,14 +1708,8 @@ def admin_remove_node(node_id):
 # ---------------------------------------------------------------------------
 
 def _dispatch_pending_node_tasks():
-    """Assign unallocated queued/pending tasks to any available online nodes.
-
-    Tasks are 'pending' for only a moment during upload, then become 'queued'.
-    A queued task without an assigned_node_id is either waiting for a Celery
-    worker, or was never dispatched.  If an online node exists that can handle
-    the task we reassign it (revoking the Celery reservation if present).
-    """
-    # Collect tasks that have no node assigned yet
+    """Assign unallocated pending/queued tasks to an online node, or fall back
+    to the local Celery worker if no suitable node is available."""
     waiting = Task.query.filter(
         Task.status.in_(['pending', 'queued']),
         Task.assigned_node_id.is_(None),
@@ -1725,13 +1719,12 @@ def _dispatch_pending_node_tasks():
         return
 
     online_nodes = Node.query.filter_by(status='online').all()
-    if not online_nodes:
-        return
 
     for task in waiting:
+        # --- Try to assign to an online node first ---
+        assigned = False
         for node in online_nodes:
             if task.comsol_version in node.comsol_versions:
-                # Revoke any outstanding Celery reservation
                 if task.celery_task_id:
                     try:
                         from tasks import run_comsol_simulation
@@ -1740,13 +1733,48 @@ def _dispatch_pending_node_tasks():
                         task.celery_task_id = None
                     except Exception:
                         pass
-
                 task.assigned_node_id = node.id
                 if task.status != 'queued':
-                    task.mark_queued()   # commits
+                    task.mark_queued()
                 else:
                     db.session.commit()
-                break  # next task
+                assigned = True
+                break
+
+        if assigned:
+            continue
+
+        # --- Fall back to local Celery worker ---
+        # Only start locally if no local task is already running.
+        local_running = Task.query.filter_by(
+            status='running', assigned_node_id=None
+        ).count()
+        if local_running > 0:
+            continue
+
+        upload_path = (Config.UPLOAD_FOLDER
+                       / task.user.get_user_folder()
+                       / task.unique_filename)
+        result_name = Path(task.unique_filename).stem + '_solved.mph'
+        result_path = (Config.RESULTS_FOLDER
+                       / task.user.get_user_folder()
+                       / result_name)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if task.celery_task_id:
+            # Already queued in Celery — don't double-submit
+            continue
+
+        from tasks import run_comsol_simulation
+        celery_task = run_comsol_simulation.apply_async(
+            args=[task.id, str(upload_path), str(result_path)],
+            queue=Config.HIGH_PRIORITY_QUEUE if task.priority == 'high'
+                  else Config.NORMAL_PRIORITY_QUEUE,
+        )
+        task.celery_task_id = celery_task.id
+        task.mark_queued()
+        # Only one local task at a time — stop after dispatching one
+        break
 
 
 def _dispatch_task(task, upload_path, result_path):
