@@ -1127,6 +1127,28 @@ def cancel_task(task_id):
     except Exception as e:
         return jsonify({'error': f'Failed to cancel task: {str(e)}'}), 500
 
+@app.route('/task/<task_id>/requeue', methods=['POST'])
+@login_required
+def requeue_task(task_id):
+    """Re-queue a cancelled task so it can be picked up again."""
+    task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+    if task.status != 'cancelled':
+        return jsonify({'error': f'Only cancelled tasks can be re-queued (status: {task.status})'}), 400
+
+    task.status           = 'pending'
+    task.assigned_node_id = None
+    task.celery_task_id   = None
+    task.started_at       = None
+    task.error_message    = None
+    task.progress_percentage = 0.0
+    task.current_step     = None
+    db.session.commit()
+    _dispatch_pending_node_tasks()
+    return jsonify({'success': True})
+
+
 @app.route('/task/<task_id>/delete', methods=['DELETE'])
 @login_required
 def delete_task(task_id):

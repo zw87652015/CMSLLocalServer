@@ -206,7 +206,13 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             # Wait for process to complete
             return_code = process.wait()
             full_output = '\n'.join(output_lines)
-            
+
+            # Re-read status — cancel_task may have marked it cancelled while
+            # COMSOL was running and then killed the process (return code 15).
+            db.session.refresh(task)
+            if task.status == 'cancelled':
+                return {'status': 'cancelled'}
+
             if return_code == 0:
                 # Check for COMSOL® errors even if return code is 0
                 if ProgressParser.has_error_markers(full_output):
@@ -248,7 +254,9 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             # Handle any unexpected errors
             error_msg = str(e)
             if task:
-                task.mark_failed(error_msg)
+                db.session.refresh(task)
+                if task.status != 'cancelled':
+                    task.mark_failed(error_msg)
             
             # Log error to file if possible
             try:

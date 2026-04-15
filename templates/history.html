@@ -88,6 +88,13 @@
                                 <i class="fas fa-triangle-exclamation"></i>
                             </button>
                             {% endif %}
+                            {% if task.status == 'cancelled' %}
+                            <button class="btn btn-warning btn-sm"
+                                    onclick="requeueTask('{{ task.id }}')"
+                                    title="{{ 'Re-queue' if g.language == 'en' else '重新排队' }}">
+                                <i class="fas fa-rotate-right"></i>
+                            </button>
+                            {% endif %}
                         </div>
                     </td>
                 </tr>
@@ -146,6 +153,12 @@
 function showError(message) {
     document.getElementById('errorContent').textContent = message;
     new bootstrap.Modal(document.getElementById('errorModal')).show();
+}
+
+function requeueTask(taskId) {
+    fetch(`/task/${taskId}/requeue`, {method: 'POST'})
+        .then(r => r.json())
+        .then(d => { if (d.success) location.reload(); else alert(d.error); });
 }
 </script>
 {% endblock %}
