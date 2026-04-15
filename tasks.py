@@ -100,7 +100,23 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
         task = Task.query.get(task_id)
         if not task:
             raise Exception(f"Task {task_id} not found in database")
-        
+
+        # If the task was cancelled/deleted before we got to run it, exit cleanly.
+        if task.status not in ('pending', 'queued'):
+            return f"Task {task_id} already in status '{task.status}', skipping"
+
+        # Enforce single-local-task rule: if another local task is already running,
+        # put this one back to queued and let process_next_queued_task handle ordering.
+        other_running = Task.query.filter(
+            Task.status == 'running',
+            Task.assigned_node_id.is_(None),
+            Task.id != task_id,
+        ).count()
+        if other_running > 0:
+            task.status = 'queued'
+            db.session.commit()
+            return f"Another local task is already running; task {task_id} re-queued"
+
         try:
             # Mark task as started
             task.mark_started()

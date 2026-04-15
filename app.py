@@ -1069,11 +1069,14 @@ def cancel_task(task_id):
         return jsonify({'error': f'Task cannot be cancelled (status: {task.status})'}), 400
     
     try:
-        # Cancel the Celery task
+        # Revoke the Celery reservation so the task won't start if it hasn't yet.
+        # Do NOT use terminate=True — on Windows that sends os.kill() which requires
+        # admin rights and crashes the worker.  The COMSOL process is killed below
+        # via psutil, which is sufficient.
         if task.celery_task_id:
             from tasks import run_comsol_simulation, process_next_queued_task, kill_comsol_process
             celery_task = run_comsol_simulation.AsyncResult(task.celery_task_id)
-            celery_task.revoke(terminate=True)
+            celery_task.revoke(terminate=False)
         
         # Kill the COMSOL process immediately (synchronously)
         if task.process_id:
@@ -1130,11 +1133,11 @@ def delete_task(task_id):
     try:
         was_active = task.can_be_cancelled()
 
-        # Revoke Celery task
+        # Revoke Celery reservation (no terminate=True — crashes worker on Windows)
         if task.celery_task_id:
             from tasks import run_comsol_simulation
             celery_task = run_comsol_simulation.AsyncResult(task.celery_task_id)
-            celery_task.revoke(terminate=True)
+            celery_task.revoke(terminate=False)
 
         # Kill the COMSOL OS process and all its children
         if task.process_id:
