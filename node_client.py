@@ -87,12 +87,25 @@ def _get_cpu_model() -> str:
         )
         name, _ = winreg.QueryValueEx(key, 'ProcessorNameString')
         winreg.CloseKey(key)
-        return name.strip()
-    except Exception:
-        pass
-    # Fallback for non-Windows
+        result = name.strip()
+        logger.debug('CPU model (registry): %s', result)
+        return result
+    except Exception as e:
+        logger.debug('winreg CPU lookup failed (%s), falling back to platform', e)
     import platform
-    return platform.processor() or platform.machine()
+    result = platform.processor() or platform.machine()
+    logger.debug('CPU model (platform fallback): %s', result)
+    return result
+
+
+def _delete_with_sidecars(path: Path):
+    """Delete a file and any COMSOL sidecar files (.recovery, .status)."""
+    for p in [path, Path(str(path) + '.recovery'), Path(str(path) + '.status')]:
+        try:
+            if p.exists():
+                p.unlink()
+        except Exception:
+            pass
 
 
 def _disk_free_gb() -> float:
@@ -225,8 +238,8 @@ class NodeClient:
             'cpu_cores':       cpu_cores,
             'cpu_model':       cpu_model,
         }
-        logger.info('Registering with server %s as %s (COMSOL: %s, cores: %d) ...',
-                    self.server_url, hostname, comsol_versions, cpu_cores)
+        logger.info('Registering with server %s as %s (COMSOL: %s, cores: %d, cpu: %s) ...',
+                    self.server_url, hostname, comsol_versions, cpu_cores, cpu_model)
         resp = self.session.post(
             self.server_url + '/api/nodes/register',
             json=payload,
@@ -304,10 +317,8 @@ class NodeClient:
             try:
                 if atype == 'delete_file':
                     fname = action.get('filename', '')
-                    target = work_dir / fname
-                    if target.exists():
-                        target.unlink()
-                        logger.info('Deleted node-local file: %s', fname)
+                    _delete_with_sidecars(work_dir / fname)
+                    logger.info('Deleted node-local file (+ sidecars): %s', fname)
                     completed.append(action_id)
 
                 elif atype == 'reupload':
@@ -484,12 +495,8 @@ class NodeClient:
                     logger.info('Partial log uploaded for aborted task %s.', task_id)
                 except Exception as exc:
                     logger.warning('Could not upload partial log: %s', exc)
-            for p in (input_path, output_path):
-                try:
-                    if p.exists():
-                        p.unlink()
-                except Exception:
-                    pass
+            _delete_with_sidecars(input_path)
+            _delete_with_sidecars(output_path)
             return
 
         full_output  = '\n'.join(output_lines)
@@ -516,11 +523,15 @@ class NodeClient:
         # Keep the output file so the server can request a re-upload later
         # if the initial upload was too large.  It will be deleted by a
         # 'delete_file' pending action once the server no longer needs it.
-        try:
-            if input_path.exists():
-                input_path.unlink()
-        except Exception:
-            pass
+        # Sidecars (.recovery, .status) are always safe to remove immediately.
+        _delete_with_sidecars(input_path)
+        for sidecar_ext in ('.recovery', '.status'):
+            sidecar = Path(str(output_path) + sidecar_ext)
+            try:
+                if sidecar.exists():
+                    sidecar.unlink()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Report helpers
