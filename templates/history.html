@@ -28,13 +28,6 @@
                         {{ task.original_filename }}
                     </td>
                     <td>
-                        {% if task.node %}
-                            <span style="font-size:12px;font-family:monospace;">{{ task.node.hostname }}</span>
-                        {% else %}
-                            <span style="font-size:11px;color:var(--c-text-sec);">{{ 'local' if g.language == 'en' else '本地' }}</span>
-                        {% endif %}
-                    </td>
-                    <td>
                         {% set sc = {'completed':'bg-success','failed':'bg-danger','running':'bg-warning','queued':'bg-info','cancelled':'bg-dark'} %}
                         <span class="badge {{ sc.get(task.status, 'bg-secondary') }}">
                             {{ g.get_text('completed') if task.status == 'completed' else
@@ -44,6 +37,13 @@
                                g.get_text('queued') if task.status == 'queued' else
                                g.get_text('pending_status') }}
                         </span>
+                    </td>
+                    <td style="font-size:12px;">
+                        {% if task.node %}
+                            <i class="fas fa-network-wired" style="opacity:.4;margin-right:3px;"></i>{{ task.node.hostname }}
+                        {% else %}
+                            <span style="color:var(--c-text-sec);">{{ 'local' if g.language == 'en' else '本地' }}</span>
+                        {% endif %}
                     </td>
                     <td>
                         <span class="badge {{ 'bg-danger' if task.priority == 'high' else 'bg-secondary' }}">
