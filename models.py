@@ -127,6 +127,7 @@ class Task(db.Model):
     # Result files
     result_filename = db.Column(db.String(255))
     log_filename = db.Column(db.String(255))
+    result_upload_pending = db.Column(db.Boolean, default=False)  # node must re-upload
 
     # Node distribution — null means local Celery worker
     assigned_node_id = db.Column(db.String(36), db.ForeignKey('nodes.id'), nullable=True)
@@ -236,10 +237,16 @@ class Node(db.Model):
     # Capabilities stored as JSON list, e.g. '["6.2","6.3"]'
     comsol_versions_json = db.Column(db.Text, default='[]')
     cpu_cores    = db.Column(db.Integer, default=1)
+    cpu_model    = db.Column(db.String(255))
+    disk_free_gb = db.Column(db.Float)          # reported by node on heartbeat
 
     # status: online | busy | offline
     status       = db.Column(db.String(20), default='online')
     current_task_id = db.Column(db.String(36), nullable=True)
+
+    # Pending actions the node must execute on next poll/sync.
+    # JSON list of {"id": uuid, "type": "delete_file"|"reupload", ...extra}
+    pending_actions_json = db.Column(db.Text, default='[]')
 
     registered_at = db.Column(db.DateTime, default=utcnow)
     last_seen     = db.Column(db.DateTime, default=utcnow)
@@ -259,6 +266,28 @@ class Node(db.Model):
     def comsol_versions(self, value):
         self.comsol_versions_json = json.dumps(value)
 
+    @property
+    def pending_actions(self):
+        try:
+            return json.loads(self.pending_actions_json or '[]')
+        except Exception:
+            return []
+
+    @pending_actions.setter
+    def pending_actions(self, value):
+        self.pending_actions_json = json.dumps(value)
+
+    def add_pending_action(self, action: dict):
+        """Append an action (must have a unique 'id' key)."""
+        actions = self.pending_actions
+        actions.append(action)
+        self.pending_actions = actions
+
+    def remove_pending_actions(self, ids: list):
+        """Remove actions whose 'id' is in the given list."""
+        self.pending_actions = [a for a in self.pending_actions
+                                if a.get('id') not in ids]
+
     def touch(self):
         """Update last_seen timestamp."""
         self.last_seen = utcnow()
@@ -270,6 +299,8 @@ class Node(db.Model):
             'ip_address': self.ip_address,
             'comsol_versions': self.comsol_versions,
             'cpu_cores': self.cpu_cores,
+            'cpu_model': self.cpu_model,
+            'disk_free_gb': self.disk_free_gb,
             'status': self.status,
             'current_task_id': self.current_task_id,
             'registered_at': self.registered_at.isoformat() if self.registered_at else None,

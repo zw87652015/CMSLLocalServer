@@ -12,6 +12,7 @@
                 <tr>
                     <th>{{ g.get_text('filename') }}</th>
                     <th>{{ g.get_text('status') }}</th>
+                    <th>{{ 'Node' if g.language == 'en' else '节点' }}</th>
                     <th>{{ g.get_text('priority') }}</th>
                     <th style="min-width:100px;">{{ g.get_text('progress') }}</th>
                     <th>{{ g.get_text('created_time') }}</th>
@@ -25,6 +26,13 @@
                 <tr>
                     <td style="font-weight:500;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
                         {{ task.original_filename }}
+                    </td>
+                    <td>
+                        {% if task.node %}
+                            <span style="font-size:12px;font-family:monospace;">{{ task.node.hostname }}</span>
+                        {% else %}
+                            <span style="font-size:11px;color:var(--c-text-sec);">{{ 'local' if g.language == 'en' else '本地' }}</span>
+                        {% endif %}
                     </td>
                     <td>
                         {% set sc = {'completed':'bg-success','failed':'bg-danger','running':'bg-warning','queued':'bg-info','cancelled':'bg-dark'} %}

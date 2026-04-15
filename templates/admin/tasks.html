@@ -54,6 +54,7 @@
                     <th>{{ g.get_text('user') }}</th>
                     <th>{{ g.get_text('filename') }}</th>
                     <th>{{ g.get_text('status') }}</th>
+                    <th>{{ 'Node' if g.language == 'en' else '节点' }}</th>
                     <th>{{ g.get_text('priority') }}</th>
                     <th style="min-width:100px;">{{ g.get_text('progress') }}</th>
                     <th>{{ g.get_text('created_time') }}</th>
@@ -87,6 +88,13 @@
                                g.get_text('queued') if task.status == 'queued' else
                                g.get_text('pending_status') }}
                         </span>
+                    </td>
+                    <td style="font-size:12px;">
+                        {% if task.node %}
+                            <i class="fas fa-network-wired" style="opacity:.4;margin-right:3px;"></i>{{ task.node.hostname }}
+                        {% else %}
+                            <span style="color:var(--c-text-sec);">{{ 'local' if g.language == 'en' else '本地' }}</span>
+                        {% endif %}
                     </td>
                     <td>
                         <span class="badge {{ 'bg-danger' if task.priority == 'high' else 'bg-secondary' }}">

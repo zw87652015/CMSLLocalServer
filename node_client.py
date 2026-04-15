@@ -77,6 +77,16 @@ POLL_INTERVAL      = 5    # seconds between task polls when idle
 PROGRESS_INTERVAL  = 5    # seconds between progress reports to server
 
 
+def _disk_free_gb() -> float:
+    """Return free disk space (GB) on the drive where node_workdir lives."""
+    try:
+        import shutil
+        usage = shutil.disk_usage(Path(__file__).parent / 'node_workdir')
+        return round(usage.free / 1024 ** 3, 2)
+    except Exception:
+        return 0.0
+
+
 def detect_comsol_versions(paths=None):
     """Return a list of COMSOL version strings whose executables exist."""
     if paths is None:
@@ -180,9 +190,11 @@ class NodeClient:
     # Registration
     # ------------------------------------------------------------------
     def register(self):
+        import platform
         hostname        = socket.gethostname()
         comsol_versions = detect_comsol_versions(self.comsol_paths)
         cpu_cores       = multiprocessing.cpu_count()
+        cpu_model       = platform.processor() or None
 
         if not comsol_versions:
             logger.warning(
@@ -194,6 +206,7 @@ class NodeClient:
             'hostname':        hostname,
             'comsol_versions': comsol_versions,
             'cpu_cores':       cpu_cores,
+            'cpu_model':       cpu_model,
         }
         logger.info('Registering with server %s as %s (COMSOL: %s, cores: %d) ...',
                     self.server_url, hostname, comsol_versions, cpu_cores)
@@ -216,11 +229,15 @@ class NodeClient:
         Returns True on success, False on network/server error.
         Raises PermissionError if the server returns 401 (stale credentials)."""
         try:
-            resp = self._post('/api/nodes/heartbeat', json={'status': status})
+            payload = {'status': status, 'disk_free_gb': _disk_free_gb()}
+            resp = self._post('/api/nodes/heartbeat', json=payload)
             if resp.status_code == 401:
                 raise PermissionError('Credentials rejected by server (401)')
             resp.raise_for_status()
             self._last_heartbeat = time.time()
+            actions = resp.json().get('pending_actions', [])
+            if actions:
+                self._process_actions(actions)
             return True
         except PermissionError:
             raise
@@ -238,18 +255,70 @@ class NodeClient:
     def poll_task(self):
         """Ask the server for the next task assigned to this node.
         Returns the task dict or None.
-        Raises PermissionError on 401 (stale credentials)."""
+        Raises PermissionError on 401 (stale credentials).
+        Also processes any pending_actions included in the response."""
         try:
             resp = self._get('/api/nodes/task/poll')
             if resp.status_code == 401:
                 raise PermissionError('Credentials rejected by server (401)')
             resp.raise_for_status()
-            return resp.json().get('task')
+            data = resp.json()
+            actions = data.get('pending_actions', [])
+            if actions:
+                self._process_actions(actions)
+            return data.get('task')
         except PermissionError:
             raise
         except Exception as exc:
             logger.warning('Poll failed: %s', exc)
             return None
+
+    # ------------------------------------------------------------------
+    # Pending action processing
+    # ------------------------------------------------------------------
+    def _process_actions(self, actions: list):
+        """Execute pending actions sent by the server and acknowledge them."""
+        work_dir    = Path(__file__).parent / 'node_workdir'
+        completed   = []
+
+        for action in actions:
+            action_id = action.get('id')
+            atype     = action.get('type')
+            try:
+                if atype == 'delete_file':
+                    fname = action.get('filename', '')
+                    target = work_dir / fname
+                    if target.exists():
+                        target.unlink()
+                        logger.info('Deleted node-local file: %s', fname)
+                    completed.append(action_id)
+
+                elif atype == 'reupload':
+                    task_id  = action.get('task_id')
+                    filename = action.get('output_filename', '')
+                    src      = work_dir / filename
+                    if src.exists():
+                        logger.info('Re-uploading result file for task %s …', task_id)
+                        with open(src, 'rb') as fh:
+                            self._post_with_retry(
+                                f'/api/nodes/task/{task_id}/upload_result',
+                                files={'result_file': (src.name, fh,
+                                                       'application/octet-stream')},
+                                timeout=600,
+                            )
+                        logger.info('Re-upload complete for task %s.', task_id)
+                        completed.append(action_id)
+                    else:
+                        logger.warning('Re-upload requested but file not found: %s', filename)
+                        completed.append(action_id)  # acknowledge anyway — can't recover
+            except Exception as exc:
+                logger.error('Action %s (%s) failed: %s', action_id, atype, exc)
+
+        if completed:
+            try:
+                self._post('/api/nodes/actions/done', json={'completed': completed})
+            except Exception as exc:
+                logger.warning('Could not acknowledge actions: %s', exc)
 
     # ------------------------------------------------------------------
     # Task execution
@@ -426,12 +495,15 @@ class NodeClient:
             self._report_fail(task_id, error_msg, full_output)
 
         # --- Cleanup local work files ---
-        for p in (input_path, output_path):
-            try:
-                if p.exists():
-                    p.unlink()
-            except Exception:
-                pass
+        # Always delete the input file — the server still has it.
+        # Keep the output file so the server can request a re-upload later
+        # if the initial upload was too large.  It will be deleted by a
+        # 'delete_file' pending action once the server no longer needs it.
+        try:
+            if input_path.exists():
+                input_path.unlink()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Report helpers

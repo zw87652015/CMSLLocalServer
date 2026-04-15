@@ -42,6 +42,10 @@ uploads/
 results/
 tests/
 
+# Node client saved credentials / settings
+node_client_config.json
+node_workdir/
+
 # IDE
 .vscode/
 .idea/
