@@ -65,6 +65,62 @@ def migrate_database():
         else:
             print("'server_config' already exists, skipping")
 
+        # Migration 5: create nodes table
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'")
+        if not cursor.fetchone():
+            cursor.execute("""
+                CREATE TABLE nodes (
+                    id                   VARCHAR(36)  PRIMARY KEY NOT NULL,
+                    hostname             VARCHAR(255) NOT NULL,
+                    ip_address           VARCHAR(45)  NOT NULL,
+                    auth_token           VARCHAR(64)  NOT NULL UNIQUE,
+                    comsol_versions_json TEXT         NOT NULL DEFAULT '[]',
+                    cpu_cores            INTEGER      NOT NULL DEFAULT 1,
+                    status               VARCHAR(20)  NOT NULL DEFAULT 'online',
+                    current_task_id      VARCHAR(36),
+                    registered_at        DATETIME,
+                    last_seen            DATETIME
+                )
+            """)
+            print("Created 'nodes' table")
+        else:
+            print("'nodes' already exists, skipping")
+
+        # Migration 6: add assigned_node_id to tasks
+        if not _column_exists(cursor, 'tasks', 'assigned_node_id'):
+            cursor.execute("ALTER TABLE tasks ADD COLUMN assigned_node_id VARCHAR(36) REFERENCES nodes(id)")
+            print("Added 'assigned_node_id' column to tasks table")
+        else:
+            print("'assigned_node_id' already exists, skipping")
+
+        # Migration 7: add cpu_model to nodes
+        if not _column_exists(cursor, 'nodes', 'cpu_model'):
+            cursor.execute("ALTER TABLE nodes ADD COLUMN cpu_model VARCHAR(255)")
+            print("Added 'cpu_model' column to nodes table")
+        else:
+            print("'cpu_model' already exists, skipping")
+
+        # Migration 8: add disk_free_gb to nodes
+        if not _column_exists(cursor, 'nodes', 'disk_free_gb'):
+            cursor.execute("ALTER TABLE nodes ADD COLUMN disk_free_gb FLOAT")
+            print("Added 'disk_free_gb' column to nodes table")
+        else:
+            print("'disk_free_gb' already exists, skipping")
+
+        # Migration 9: add pending_actions_json to nodes
+        if not _column_exists(cursor, 'nodes', 'pending_actions_json'):
+            cursor.execute("ALTER TABLE nodes ADD COLUMN pending_actions_json TEXT NOT NULL DEFAULT '[]'")
+            print("Added 'pending_actions_json' column to nodes table")
+        else:
+            print("'pending_actions_json' already exists, skipping")
+
+        # Migration 10: add result_upload_pending to tasks
+        if not _column_exists(cursor, 'tasks', 'result_upload_pending'):
+            cursor.execute("ALTER TABLE tasks ADD COLUMN result_upload_pending BOOLEAN NOT NULL DEFAULT 0")
+            print("Added 'result_upload_pending' column to tasks table")
+        else:
+            print("'result_upload_pending' already exists, skipping")
+
         conn.commit()
         print("Migration complete.")
 

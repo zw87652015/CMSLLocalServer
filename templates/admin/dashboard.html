@@ -42,6 +42,17 @@
             </div>
         </div>
     </div>
+    <div class="col-sm-6 col-xl-3">
+        <div class="metric-card">
+            <div class="metric-icon" style="background:rgba(99,102,241,.12);color:#6366f1;">
+                <i class="fas fa-network-wired"></i>
+            </div>
+            <div class="metric-body">
+                <div class="metric-value">{{ online_nodes }}</div>
+                <div class="metric-label">{{ 'Online Nodes' if g.language == 'en' else '在线节点' }}</div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <div class="row g-4">
@@ -117,6 +128,10 @@
                     <i class="fas fa-list"></i>
                     {{ g.get_text('view_queue') }}
                 </a>
+                <a href="{{ url_for('admin_nodes') }}" class="btn btn-outline-secondary" style="justify-content:flex-start;">
+                    <i class="fas fa-network-wired"></i>
+                    {{ 'Node Computers' if g.language == 'en' else '节点计算机' }}
+                </a>
                 <a href="{{ url_for('admin_settings') }}" class="btn btn-outline-secondary" style="justify-content:flex-start;">
                     <i class="fas fa-sliders"></i>
                     {{ 'Server Settings' if g.language == 'en' else '服务器设置' }}
@@ -125,5 +140,63 @@
         </div>
     </div>
 
+</div>
+
+<!-- Node status panel -->
+<div class="row g-4 mt-0">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <i class="fas fa-network-wired" style="color:#6366f1;font-size:14px;"></i>
+                <h5>{{ 'Compute Nodes' if g.language == 'en' else '计算节点' }}</h5>
+                <a href="{{ url_for('admin_nodes') }}" class="btn btn-secondary btn-sm ms-auto">
+                    {{ 'Manage' if g.language == 'en' else '管理' }}
+                </a>
+            </div>
+            {% if not nodes %}
+            <div class="card-body" style="color:var(--c-text-sec);font-size:13px;padding:20px;">
+                {{ 'No nodes registered. Copy node_client.py to each compute node and run it.' if g.language == 'en'
+                   else '尚无节点注册。将 node_client.py 复制到各计算节点并运行。' }}
+            </div>
+            {% else %}
+            <div class="table-responsive">
+                <table class="table table-hover" style="margin-bottom:0;">
+                    <thead>
+                        <tr>
+                            <th>{{ 'Hostname' if g.language == 'en' else '主机名' }}</th>
+                            <th>IP</th>
+                            <th>COMSOL</th>
+                            <th>{{ g.get_text('status') }}</th>
+                            <th>{{ 'Last Seen' if g.language == 'en' else '最后活跃' }}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for node in nodes %}
+                        <tr>
+                            <td style="font-weight:500;">{{ node.hostname }}</td>
+                            <td style="font-family:monospace;font-size:12px;">{{ node.ip_address }}</td>
+                            <td>
+                                {% for ver in node.comsol_versions %}
+                                  <span class="badge" style="background:var(--c-bg-warm);color:var(--c-text-sec);border:1px solid var(--c-border);font-size:11px;">{{ ver }}</span>
+                                {% endfor %}
+                            </td>
+                            <td>
+                                {% if node.status == 'online' %}
+                                  <span class="badge bg-success">{{ 'Online' if g.language == 'en' else '在线' }}</span>
+                                {% elif node.status == 'busy' %}
+                                  <span class="badge bg-warning text-dark">{{ 'Busy' if g.language == 'en' else '忙碌' }}</span>
+                                {% else %}
+                                  <span class="badge bg-secondary">{{ 'Offline' if g.language == 'en' else '离线' }}</span>
+                                {% endif %}
+                            </td>
+                            <td style="font-size:12px;color:var(--c-text-sec);">{{ node.last_seen|localtime }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
+        </div>
+    </div>
 </div>
 {% endblock %}

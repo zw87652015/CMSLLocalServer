@@ -100,7 +100,23 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
         task = Task.query.get(task_id)
         if not task:
             raise Exception(f"Task {task_id} not found in database")
-        
+
+        # If the task was cancelled/deleted before we got to run it, exit cleanly.
+        if task.status not in ('pending', 'queued'):
+            return f"Task {task_id} already in status '{task.status}', skipping"
+
+        # Enforce single-local-task rule: if another local task is already running,
+        # put this one back to queued and let process_next_queued_task handle ordering.
+        other_running = Task.query.filter(
+            Task.status == 'running',
+            Task.assigned_node_id.is_(None),
+            Task.id != task_id,
+        ).count()
+        if other_running > 0:
+            task.status = 'queued'
+            db.session.commit()
+            return f"Another local task is already running; task {task_id} re-queued"
+
         try:
             # Mark task as started
             task.mark_started()
@@ -190,7 +206,13 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             # Wait for process to complete
             return_code = process.wait()
             full_output = '\n'.join(output_lines)
-            
+
+            # Re-read status — cancel_task may have marked it cancelled while
+            # COMSOL was running and then killed the process (return code 15).
+            db.session.refresh(task)
+            if task.status == 'cancelled':
+                return {'status': 'cancelled'}
+
             if return_code == 0:
                 # Check for COMSOL® errors even if return code is 0
                 if ProgressParser.has_error_markers(full_output):
@@ -232,7 +254,9 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             # Handle any unexpected errors
             error_msg = str(e)
             if task:
-                task.mark_failed(error_msg)
+                db.session.refresh(task)
+                if task.status != 'cancelled':
+                    task.mark_failed(error_msg)
             
             # Log error to file if possible
             try:
@@ -301,11 +325,18 @@ def kill_comsol_process(process_id):
 def process_next_queued_task():
     """Process the next queued task after a cancellation"""
     with app.app_context():
-        # Find the next pending task and atomically claim it to avoid race conditions.
-        # We UPDATE status to 'queued' only where it is still 'pending', then verify
-        # the rowcount to ensure exactly one worker claimed this task.
+        # Do not start a new local task if one is already running locally.
+        local_running = Task.query.filter_by(
+            status='running', assigned_node_id=None
+        ).count()
+        if local_running > 0:
+            return "A local task is already running"
+
+        # Find the next pending/queued task that has no node assigned
+        # (node-assigned tasks are handled by the node poll endpoint).
         candidate = Task.query.filter(
-            Task.status.in_(['pending', 'queued'])
+            Task.status.in_(['pending', 'queued']),
+            Task.assigned_node_id.is_(None),
         ).order_by(Task.created_at).first()
 
         if not candidate:
@@ -313,7 +344,11 @@ def process_next_queued_task():
 
         rows_updated = (
             db.session.query(Task)
-            .filter(Task.id == candidate.id, Task.status.in_(['pending', 'queued']))
+            .filter(
+                Task.id == candidate.id,
+                Task.status.in_(['pending', 'queued']),
+                Task.assigned_node_id.is_(None),
+            )
             .update({'status': 'queued'}, synchronize_session=False)
         )
         db.session.commit()

@@ -1,0 +1,9 @@
+{
+  "server_url": "http://192.168.31.173:5000",
+  "comsol_paths": {
+    "6.3": "C:\\Program Files\\COMSOL\\COMSOL63\\Multiphysics\\bin\\win64\\comsolbatch.exe",
+    "6.2": "D:/Program Files/COMSOL/COMSOL62/Multiphysics/bin/win64/comsolbatch.exe"
+  },
+  "node_id": "a5de3333-a2bc-4a97-b24c-556aaabbe02c",
+  "auth_token": "ddbc93d80e3eeb2fc73e6687e8aa1d4a461df294f46c291e60c21c52208d721c"
+}

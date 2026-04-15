@@ -60,6 +60,9 @@
                                         <div class="queue-item-name">{{ task.original_filename }}</div>
                                         <div class="queue-item-meta">
                                             {{ g.get_text('start_time') }}: {{ task.started_at|localtime('%H:%M:%S') if task.started_at else g.get_text('unknown_time') }}
+                                            {% if task.node %}
+                                            · <i class="fas fa-network-wired" style="opacity:.5;font-size:10px;"></i> {{ task.node.hostname }}
+                                            {% endif %}
                                         </div>
                                     </div>
                                     <span class="badge bg-warning">{{ g.get_text('running') }}</span>

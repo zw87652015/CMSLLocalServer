@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 import unicodedata
-from models import db, User, Task, SystemStats, ServerConfig
+from models import db, User, Task, SystemStats, ServerConfig, Node
 from forms import LoginForm, RegistrationForm, ChangePasswordForm
 from config import Config
 # Import moved to avoid circular import
@@ -21,10 +21,16 @@ def _localtime(dt, fmt='%Y-%m-%d %H:%M'):
     """Convert a UTC datetime (aware or naive) to server local time and format it."""
     if dt is None:
         return '—'
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    local_dt = dt.astimezone(datetime.now().astimezone().tzinfo)
-    return local_dt.strftime(fmt)
+    try:
+        import calendar
+        if dt.tzinfo is not None:
+            ts = dt.timestamp()
+        else:
+            # Naive datetime stored as UTC → convert to Unix timestamp
+            ts = calendar.timegm(dt.timetuple())
+        return datetime.fromtimestamp(ts).strftime(fmt)
+    except Exception:
+        return str(dt)
 
 def create_app():
     app = Flask(__name__)
@@ -563,7 +569,10 @@ def admin_dashboard():
     users = User.query.all()
     total_tasks = Task.query.count()
     active_tasks = Task.query.filter(Task.status.in_(['pending', 'queued', 'running'])).count()
-    return render_template('admin/dashboard.html', users=users, total_tasks=total_tasks, active_tasks=active_tasks)
+    nodes = Node.query.order_by(Node.registered_at).all()
+    online_nodes = sum(1 for n in nodes if n.status in ('online', 'busy'))
+    return render_template('admin/dashboard.html', users=users, total_tasks=total_tasks,
+                           active_tasks=active_tasks, nodes=nodes, online_nodes=online_nodes)
 
 @app.route('/admin/users')
 @login_required
@@ -719,25 +728,19 @@ def upload_file():
         db.session.add(task)
         db.session.commit()
         
-        # Queue Celery task
+        # Prepare result path, then dispatch to a node or local Celery worker
         result_filename = f"{Path(unique_filename).stem}_solved.mph"
         user_results_path = Config.RESULTS_FOLDER / user_folder
         user_results_path.mkdir(parents=True, exist_ok=True)
         result_path = user_results_path / result_filename
-        
-        from tasks import run_comsol_simulation
-        celery_task = run_comsol_simulation.apply_async(
-            args=[task.id, str(upload_path), str(result_path)],
-            queue=Config.HIGH_PRIORITY_QUEUE if priority == 'high' else Config.NORMAL_PRIORITY_QUEUE
-        )
-        
-        task.celery_task_id = celery_task.id
-        task.mark_queued()
-        
+
+        dispatch_info = _dispatch_task(task, upload_path, result_path)
+
         return jsonify({
             'success': True,
             'task_id': task.id,
-            'message': 'File uploaded and queued for processing'
+            'message': 'File uploaded and queued for processing',
+            'dispatch': dispatch_info,
         })
         
     except Exception as e:
@@ -774,7 +777,13 @@ def get_tasks():
         
         if task.result_filename:
             task_data['download_url'] = f"/download/{task.id}"
-        
+
+        if task.assigned_node_id:
+            n = Node.query.get(task.assigned_node_id)
+            task_data['node'] = {'hostname': n.hostname, 'ip_address': n.ip_address,
+                                 'status': n.status} if n else None
+            task_data['result_upload_pending'] = bool(task.result_upload_pending)
+
         task_list.append(task_data)
     
     return jsonify(task_list)
@@ -798,6 +807,13 @@ def get_task_status(task_id):
             'info': celery_task.info
         }
     
+    node_info = None
+    if task.assigned_node_id:
+        n = Node.query.get(task.assigned_node_id)
+        if n:
+            node_info = {'hostname': n.hostname, 'ip_address': n.ip_address,
+                         'status': n.status}
+
     return jsonify({
         'id': task.id,
         'status': task.status,
@@ -805,7 +821,9 @@ def get_task_status(task_id):
         'current_step': task.current_step,
         'celery_status': celery_status,
         'error_message': task.error_message,
-        'execution_time': task.execution_time
+        'execution_time': task.execution_time,
+        'node': node_info,
+        'result_upload_pending': bool(task.result_upload_pending),
     })
 
 @app.route('/download/<task_id>')
@@ -814,9 +832,34 @@ def download_result(task_id):
     """Download result file"""
     task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
     
-    if not task or not task.result_filename:
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    # If file is missing but the task ran on a node, queue a re-upload request
+    if not task.result_filename and task.assigned_node_id:
+        node = Node.query.get(task.assigned_node_id)
+        if node:
+            stem = Path(task.unique_filename).stem
+            action_id = str(uuid.uuid4())
+            node.add_pending_action({
+                'id': action_id,
+                'type': 'reupload',
+                'task_id': task.id,
+                'output_filename': f"{stem}_solved.mph",
+            })
+            task.result_upload_pending = True
+            db.session.commit()
+            return jsonify({
+                'error': 'Result file not yet on server',
+                'retry': True,
+                'message': ('Result file is being fetched from the node computer. '
+                            'Please try again in a moment.'),
+            }), 202
+        return jsonify({'error': 'Result file not available'}), 404
+
+    if not task.result_filename:
         return jsonify({'error': 'Result file not found'}), 404
-    
+
     user_folder = current_user.get_user_folder()
     result_path = Config.RESULTS_FOLDER / user_folder / task.result_filename
     if not result_path.exists():
@@ -834,6 +877,7 @@ def history():
     return render_template('history.html', tasks=tasks)
 
 @app.route('/queue')
+@login_required
 def queue_status():
     """Global queue status page"""
     from datetime import date
@@ -978,9 +1022,19 @@ def view_logs(task_id):
     """View task logs"""
     task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
     
+    # Node tasks without a saved log file — show status-appropriate message
+    if task and task.assigned_node_id and not task.log_filename:
+        if task.status in ('queued', 'pending'):
+            return jsonify({'logs': '[Task is queued and waiting to run on a node computer]'})
+        if task.status == 'running':
+            return jsonify({'logs': '[Task is currently running on node computer — logs will be available after completion]'})
+        if task.error_log:
+            return jsonify({'logs': task.error_log})
+        return jsonify({'logs': '[No log was uploaded for this task]'})
+
     if not task or not task.log_filename:
         return jsonify({'error': 'Log file not found'}), 404
-    
+
     user_folder = current_user.get_user_folder()
     log_path = Config.LOGS_FOLDER / user_folder / task.log_filename
     if not log_path.exists():
@@ -1021,11 +1075,14 @@ def cancel_task(task_id):
         return jsonify({'error': f'Task cannot be cancelled (status: {task.status})'}), 400
     
     try:
-        # Cancel the Celery task
+        # Revoke the Celery reservation so the task won't start if it hasn't yet.
+        # Do NOT use terminate=True — on Windows that sends os.kill() which requires
+        # admin rights and crashes the worker.  The COMSOL process is killed below
+        # via psutil, which is sufficient.
         if task.celery_task_id:
             from tasks import run_comsol_simulation, process_next_queued_task, kill_comsol_process
             celery_task = run_comsol_simulation.AsyncResult(task.celery_task_id)
-            celery_task.revoke(terminate=True)
+            celery_task.revoke(terminate=False)
         
         # Kill the COMSOL process immediately (synchronously)
         if task.process_id:
@@ -1054,7 +1111,10 @@ def cancel_task(task_id):
         
         # Mark task as cancelled in database
         task.mark_cancelled()
-        
+
+        # Tell the node to delete its local copy of the result file
+        _push_node_delete_action(task)
+
         # Start the next queued task after a brief delay
         from tasks import process_next_queued_task
         process_next_queued_task.apply_async(countdown=3)
@@ -1066,6 +1126,28 @@ def cancel_task(task_id):
         
     except Exception as e:
         return jsonify({'error': f'Failed to cancel task: {str(e)}'}), 500
+
+@app.route('/task/<task_id>/requeue', methods=['POST'])
+@login_required
+def requeue_task(task_id):
+    """Re-queue a cancelled task so it can be picked up again."""
+    task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+    if task.status != 'cancelled':
+        return jsonify({'error': f'Only cancelled tasks can be re-queued (status: {task.status})'}), 400
+
+    task.status           = 'pending'
+    task.assigned_node_id = None
+    task.celery_task_id   = None
+    task.started_at       = None
+    task.error_message    = None
+    task.progress_percentage = 0.0
+    task.current_step     = None
+    db.session.commit()
+    _dispatch_pending_node_tasks()
+    return jsonify({'success': True})
+
 
 @app.route('/task/<task_id>/delete', methods=['DELETE'])
 @login_required
@@ -1079,11 +1161,11 @@ def delete_task(task_id):
     try:
         was_active = task.can_be_cancelled()
 
-        # Revoke Celery task
+        # Revoke Celery reservation (no terminate=True — crashes worker on Windows)
         if task.celery_task_id:
             from tasks import run_comsol_simulation
             celery_task = run_comsol_simulation.AsyncResult(task.celery_task_id)
-            celery_task.revoke(terminate=True)
+            celery_task.revoke(terminate=False)
 
         # Kill the COMSOL OS process and all its children
         if task.process_id:
@@ -1102,9 +1184,12 @@ def delete_task(task_id):
             except Exception as e:
                 print(f"Warning: Failed to kill COMSOL process {task.process_id}: {e}")
 
-        # Clean up associated files
+        # Tell the node to delete its local copy of the result file
+        _push_node_delete_action(task)
+
+        # Clean up server-side files
         task.cleanup_files()
-        
+
         # Delete task from database
         db.session.delete(task)
         db.session.commit()
@@ -1179,6 +1264,642 @@ def change_password():
             flash(f'密码修改失败: {str(e)}', 'error')
     
     return render_template('change_password.html', form=form)
+
+# ---------------------------------------------------------------------------
+# Node distribution API
+# ---------------------------------------------------------------------------
+
+def _push_node_delete_action(task):
+    """Queue a delete_file action on the node that owns this task's result.
+    Safe to call even when the node is offline — the action persists until
+    the node comes back online and acknowledges it."""
+    if not task.assigned_node_id:
+        return
+    node = Node.query.get(task.assigned_node_id)
+    if not node:
+        return
+    stem = Path(task.unique_filename).stem
+    node.add_pending_action({
+        'id': str(uuid.uuid4()),
+        'type': 'delete_file',
+        'filename': f"{stem}_solved.mph",
+    })
+    db.session.commit()
+
+
+def _save_node_log(task, log_text: str):
+    """Write node task output to a log file on the server and set task.log_filename.
+    Best-effort — logs errors but never raises."""
+    try:
+        user_folder  = task.user.get_user_folder()
+        log_dir      = Config.LOGS_FOLDER / user_folder
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stem         = Path(task.unique_filename).stem
+        log_filename = f"{stem}.log"
+        log_path     = log_dir / log_filename
+        with open(log_path, 'w', encoding='utf-8', errors='replace') as fh:
+            fh.write(log_text)
+        task.log_filename = log_filename
+    except Exception as exc:
+        app.logger.error('_save_node_log failed for task %s: %s', task.id, exc)
+
+
+def _node_from_request():
+    """Authenticate a node from X-Node-Id / X-Node-Token headers.
+    Returns the Node object or None."""
+    node_id    = request.headers.get('X-Node-Id')
+    node_token = request.headers.get('X-Node-Token')
+    if not node_id or not node_token:
+        return None
+    return Node.query.filter_by(id=node_id, auth_token=node_token).first()
+
+
+@app.route('/api/nodes/register', methods=['POST'])
+def node_register():
+    """Node calls this on startup to register itself."""
+    data = request.get_json(silent=True) or {}
+    hostname         = data.get('hostname', 'unknown')
+    ip_address       = data.get('ip_address') or request.remote_addr
+    comsol_versions  = data.get('comsol_versions', [])
+    cpu_cores        = int(data.get('cpu_cores', 1))
+    cpu_model        = data.get('cpu_model') or None
+
+    # Re-register by hostname+ip if already known so nodes survive restarts.
+    node = Node.query.filter_by(hostname=hostname, ip_address=ip_address).first()
+    if node:
+        node.comsol_versions = comsol_versions
+        node.cpu_cores       = cpu_cores
+        if cpu_model:
+            node.cpu_model   = cpu_model
+        node.status          = 'online'
+        node.touch()
+    else:
+        import secrets
+        node = Node(
+            hostname=hostname,
+            ip_address=ip_address,
+            auth_token=secrets.token_hex(32),
+            cpu_cores=cpu_cores,
+            cpu_model=cpu_model,
+        )
+        node.comsol_versions = comsol_versions
+        db.session.add(node)
+
+    db.session.commit()
+    # Assign any waiting tasks to this newly-online node
+    _dispatch_pending_node_tasks()
+    return jsonify({'node_id': node.id, 'auth_token': node.auth_token}), 200
+
+
+@app.route('/api/nodes/heartbeat', methods=['POST'])
+def node_heartbeat():
+    """Node sends this every ~15 s to stay alive."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data        = request.get_json(silent=True) or {}
+    new_status  = data.get('status', 'online')   # 'online' | 'busy' | 'offline'
+    prev_status = node.status
+    if new_status in ('online', 'busy', 'offline'):
+        node.status = new_status
+    disk_free = data.get('disk_free_gb')
+    if disk_free is not None:
+        node.disk_free_gb = float(disk_free)
+    node.touch()
+    if new_status == 'offline':
+        node.current_task_id = None
+    actions = node.pending_actions   # snapshot before commit
+    db.session.commit()
+
+    if new_status == 'offline' and prev_status != 'offline':
+        # Node just went offline — immediately re-pend its tasks
+        _repend_tasks_for_offline_nodes([node.id])
+    elif prev_status == 'offline' and new_status == 'online':
+        # Node came back online — dispatch waiting tasks to it
+        _dispatch_pending_node_tasks()
+
+    return jsonify({'ok': True, 'pending_actions': actions}), 200
+
+
+@app.route('/api/nodes/task/poll', methods=['GET'])
+def node_task_poll():
+    """Node polls for a task assigned to it."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    node.touch()
+    db.session.commit()
+
+    # 1. Check for a task already assigned to this node
+    task = Task.query.filter_by(
+        assigned_node_id=node.id,
+        status='queued'
+    ).order_by(Task.created_at).first()
+
+    # 2. If none, try to claim an unassigned queued task (pull model)
+    if not task and node.status != 'busy':
+        for ver in node.comsol_versions:
+            candidate = Task.query.filter_by(
+                assigned_node_id=None,
+                status='queued',
+                comsol_version=ver,
+            ).order_by(Task.created_at).first()
+            if candidate:
+                candidate.assigned_node_id = node.id
+                db.session.commit()
+                task = candidate
+                break
+
+    pending_actions = node.pending_actions
+
+    if not task:
+        return jsonify({'task': None, 'pending_actions': pending_actions}), 200
+
+    return jsonify({
+        'task': {
+            'id': task.id,
+            'comsol_version': task.comsol_version,
+            'cpu_cores': int(ServerConfig.get('cpu_cores', node.cpu_cores)),
+            'input_file_url': f"/api/nodes/task/{task.id}/file",
+            'unique_filename': task.unique_filename,
+        },
+        'pending_actions': pending_actions,
+    }), 200
+
+
+@app.route('/api/nodes/task/<task_id>/file', methods=['GET'])
+def node_download_task_file(task_id):
+    """Node downloads the input .mph file for a task."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    user_folder = task.user.get_user_folder()
+    file_path   = Config.UPLOAD_FOLDER / user_folder / task.unique_filename
+    if not file_path.exists():
+        return jsonify({'error': 'Input file not found'}), 404
+
+    # Stream with 4 MB chunks to avoid Werkzeug's 8 KB default block size,
+    # which causes Nagle+delayed-ACK stalls on Windows LAN (~200 ms per chunk).
+    file_size = file_path.stat().st_size
+    CHUNK = 4 * 1024 * 1024
+
+    def _stream():
+        with open(file_path, 'rb') as fh:
+            while True:
+                data = fh.read(CHUNK)
+                if not data:
+                    break
+                yield data
+
+    from flask import Response as _Response
+    return _Response(
+        _stream(),
+        headers={
+            'Content-Disposition': f'attachment; filename="{task.unique_filename}"',
+            'Content-Length':      str(file_size),
+            'Content-Type':        'application/octet-stream',
+        }
+    )
+
+
+@app.route('/api/nodes/task/<task_id>/start', methods=['POST'])
+def node_task_start(task_id):
+    """Node reports it has started executing a task."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    task.mark_started()
+    task.process_id = data.get('process_id')
+    node.status = 'busy'
+    node.current_task_id = task_id
+    db.session.commit()
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/progress', methods=['POST'])
+def node_task_progress(task_id):
+    """Node streams progress updates for a running task."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    # If the task was cancelled while the node was running it, tell the node to abort
+    if task.status == 'cancelled':
+        return jsonify({'ok': True, 'cancel': True}), 200
+
+    data       = request.get_json(silent=True) or {}
+    percentage = float(data.get('percentage', task.progress_percentage or 0))
+    step       = data.get('step')
+    task.update_progress(percentage, step)
+    return jsonify({'ok': True, 'cancel': False}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/complete', methods=['POST'])
+def node_task_complete(task_id):
+    """Node marks a task completed and optionally uploads the result file.
+
+    The status update and the file upload are intentionally decoupled:
+    mark_completed() is called as soon as the request is authenticated so
+    the task status is always updated even if the file save fails.
+    """
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    # ── 1. Mark the task complete immediately ─────────────────────────────
+    result_filename = None
+    stem = Path(task.unique_filename).stem
+    expected_result = f"{stem}_solved.mph"
+
+    # ── 2. Try to save the result file (best-effort, never blocks status) ──
+    if 'result_file' in request.files:
+        result_file = request.files['result_file']
+        try:
+            user_folder = task.user.get_user_folder()
+            result_dir  = Config.RESULTS_FOLDER / user_folder
+            result_dir.mkdir(parents=True, exist_ok=True)
+            result_path = result_dir / expected_result
+            result_file.save(str(result_path))
+            result_filename = expected_result
+        except Exception as exc:
+            app.logger.error('node_task_complete: could not save result file '
+                             'for task %s: %s', task_id, exc)
+
+    # ── 3. Save log text if the node included it ──────────────────────────
+    log_text = (request.get_json(silent=True) or {}).get('log_text')
+    if log_text:
+        _save_node_log(task, log_text)
+
+    task.mark_completed(result_filename)   # commits status = 'completed'
+    node.status          = 'online'
+    node.current_task_id = None
+
+    # If the file landed on the server, tell the node it can delete its copy
+    if result_filename:
+        node.add_pending_action({
+            'id': str(uuid.uuid4()),
+            'type': 'delete_file',
+            'filename': result_filename,
+        })
+
+    db.session.commit()
+
+    try:
+        from tasks import update_system_stats
+        update_system_stats.delay()
+    except Exception:
+        pass
+
+    _dispatch_pending_node_tasks()
+    return jsonify({'ok': True, 'has_result': result_filename is not None}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/upload_result', methods=['POST'])
+def node_upload_result(task_id):
+    """Node uploads the result file for an already-completed task.
+
+    Called by the node client as a follow-up if the first /complete call
+    succeeded without a file (e.g., the file was too large for a single
+    multipart request).
+    """
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    if 'result_file' not in request.files:
+        return jsonify({'error': 'No result_file in request'}), 400
+
+    result_file = request.files['result_file']
+    try:
+        user_folder     = task.user.get_user_folder()
+        result_dir      = Config.RESULTS_FOLDER / user_folder
+        result_dir.mkdir(parents=True, exist_ok=True)
+        stem            = Path(task.unique_filename).stem
+        result_filename = f"{stem}_solved.mph"
+        result_path     = result_dir / result_filename
+        result_file.save(str(result_path))
+        task.result_filename      = result_filename
+        task.result_upload_pending = False
+        # File is now on the server — tell the node to delete its copy
+        node.add_pending_action({
+            'id': str(uuid.uuid4()),
+            'type': 'delete_file',
+            'filename': result_filename,
+        })
+        db.session.commit()
+    except Exception as exc:
+        app.logger.error('node_upload_result: save failed for task %s: %s',
+                         task_id, exc)
+        return jsonify({'error': str(exc)}), 500
+
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/fail', methods=['POST'])
+def node_task_fail(task_id):
+    """Node reports that a task has failed."""
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data          = request.get_json(silent=True) or {}
+    error_message = data.get('error_message', 'Node reported failure')
+    error_log     = data.get('error_log', '')
+    log_text      = data.get('log_text') or error_log
+    if log_text:
+        _save_node_log(task, log_text)
+    task.mark_failed(error_message, error_log)   # commits status = 'failed'
+    node.status          = 'online'
+    node.current_task_id = None
+    db.session.commit()
+
+    try:
+        from tasks import update_system_stats
+        update_system_stats.delay()
+    except Exception:
+        pass
+
+    _dispatch_pending_node_tasks()
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/task/<task_id>/upload_log', methods=['POST'])
+def node_upload_log(task_id):
+    """Node uploads (partial) log text for any terminal task state.
+
+    Called after abort/cancel so partial output is preserved even when the
+    normal complete/fail path is skipped.  Safe to call for completed, failed,
+    and cancelled tasks alike.
+    """
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    # Accept any task still assigned to this node regardless of status
+    task = Task.query.filter_by(id=task_id, assigned_node_id=node.id).first()
+    if not task:
+        return jsonify({'error': 'Task not found'}), 404
+
+    data     = request.get_json(silent=True) or {}
+    log_text = data.get('log_text', '')
+    if log_text:
+        _save_node_log(task, log_text)
+        db.session.commit()
+
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/actions/done', methods=['POST'])
+def node_actions_done():
+    """Node reports which pending actions it has completed.
+    Body: {"completed": ["action_id1", "action_id2", ...]}
+    """
+    node = _node_from_request()
+    if not node:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    data = request.get_json(silent=True) or {}
+    completed_ids = data.get('completed', [])
+    if completed_ids:
+        node.remove_pending_actions(completed_ids)
+        db.session.commit()
+    return jsonify({'ok': True}), 200
+
+
+@app.route('/api/nodes/list')
+@login_required
+@admin_required
+def admin_nodes_list():
+    """Admin API: current node status."""
+    nodes = Node.query.order_by(Node.registered_at).all()
+    return jsonify([n.to_dict() for n in nodes]), 200
+
+
+@app.route('/admin/nodes')
+@login_required
+@admin_required
+def admin_nodes():
+    """Admin: node management page."""
+    nodes = Node.query.order_by(Node.registered_at).all()
+    return render_template('admin/nodes.html', nodes=nodes)
+
+
+@app.route('/admin/nodes/<node_id>/remove', methods=['POST'])
+@login_required
+@admin_required
+def admin_remove_node(node_id):
+    """Admin: remove a node registration."""
+    node = Node.query.get_or_404(node_id)
+    db.session.delete(node)
+    db.session.commit()
+    flash('Node removed.' if g.language == 'en' else '节点已移除。')
+    return redirect(url_for('admin_nodes'))
+
+
+# ---------------------------------------------------------------------------
+# Node-aware task dispatcher — replaces the direct Celery call in upload_file
+# ---------------------------------------------------------------------------
+
+def _dispatch_pending_node_tasks():
+    """Assign unallocated pending/queued tasks to an online node, or fall back
+    to the local Celery worker if no suitable node is available."""
+    waiting = Task.query.filter(
+        Task.status.in_(['pending', 'queued']),
+        Task.assigned_node_id.is_(None),
+    ).order_by(Task.created_at).all()
+
+    if not waiting:
+        return
+
+    online_nodes = Node.query.filter_by(status='online').all()
+
+    for task in waiting:
+        # --- Try to assign to an online node first ---
+        assigned = False
+        for node in online_nodes:
+            if task.comsol_version in node.comsol_versions:
+                if task.celery_task_id:
+                    try:
+                        from tasks import run_comsol_simulation
+                        run_comsol_simulation.AsyncResult(
+                            task.celery_task_id).revoke()
+                        task.celery_task_id = None
+                    except Exception:
+                        pass
+                task.assigned_node_id = node.id
+                if task.status != 'queued':
+                    task.mark_queued()
+                else:
+                    db.session.commit()
+                assigned = True
+                break
+
+        if assigned:
+            continue
+
+        # --- Fall back to local Celery worker ---
+        # Only start locally if no local task is already running.
+        local_running = Task.query.filter_by(
+            status='running', assigned_node_id=None
+        ).count()
+        if local_running > 0:
+            continue
+
+        upload_path = (Config.UPLOAD_FOLDER
+                       / task.user.get_user_folder()
+                       / task.unique_filename)
+        result_name = Path(task.unique_filename).stem + '_solved.mph'
+        result_path = (Config.RESULTS_FOLDER
+                       / task.user.get_user_folder()
+                       / result_name)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if task.celery_task_id:
+            # Already queued in Celery — don't double-submit
+            continue
+
+        from tasks import run_comsol_simulation
+        celery_task = run_comsol_simulation.apply_async(
+            args=[task.id, str(upload_path), str(result_path)],
+            queue=Config.HIGH_PRIORITY_QUEUE if task.priority == 'high'
+                  else Config.NORMAL_PRIORITY_QUEUE,
+        )
+        task.celery_task_id = celery_task.id
+        task.mark_queued()
+        # Only one local task at a time — stop after dispatching one
+        break
+
+
+def _dispatch_task(task, upload_path, result_path):
+    """Assign task to an online node that supports the required COMSOL version,
+    falling back to the local Celery worker if none are available."""
+    comsol_ver = task.comsol_version
+
+    # Find an idle node that supports this COMSOL version
+    candidates = Node.query.filter_by(status='online').all()
+    chosen = None
+    for node in candidates:
+        if comsol_ver in node.comsol_versions:
+            chosen = node
+            break
+
+    if chosen:
+        # Assign to node — it will poll and pick it up
+        task.assigned_node_id = chosen.id
+        task.mark_queued()
+        # No Celery task needed; node polls /api/nodes/task/poll
+        return {'mode': 'node', 'node_id': chosen.id, 'node_hostname': chosen.hostname}
+    else:
+        # Fall back to local Celery worker
+        from tasks import run_comsol_simulation
+        celery_task = run_comsol_simulation.apply_async(
+            args=[task.id, str(upload_path), str(result_path)],
+            queue=Config.HIGH_PRIORITY_QUEUE if task.priority == 'high'
+                  else Config.NORMAL_PRIORITY_QUEUE
+        )
+        task.celery_task_id = celery_task.id
+        task.mark_queued()
+        return {'mode': 'local', 'celery_task_id': celery_task.id}
+
+
+# ---------------------------------------------------------------------------
+def _repend_tasks_for_offline_nodes(node_ids: list):
+    """Re-pend any running/queued tasks whose assigned node just went offline,
+    then try to dispatch them to remaining online nodes."""
+    if not node_ids:
+        return
+    orphaned = Task.query.filter(
+        Task.status.in_(['queued', 'running']),
+        Task.assigned_node_id.in_(node_ids),
+    ).all()
+    for stuck in orphaned:
+        stuck.assigned_node_id = None
+        stuck.status = 'pending'
+        stuck.started_at = None
+    if orphaned:
+        db.session.commit()
+    _dispatch_pending_node_tasks()
+
+
+# Heartbeat monitor — background thread, started once when Flask starts
+# ---------------------------------------------------------------------------
+
+def _start_heartbeat_monitor(flask_app):
+    """Background thread: mark nodes offline if last_seen > 60 s ago."""
+    import threading
+    from datetime import timedelta, datetime as _datetime
+
+    def _monitor():
+        while True:
+            import time
+            time.sleep(30)
+            try:
+                with flask_app.app_context():
+                    # Use naive UTC so the comparison works with SQLite's
+                    # naive-datetime storage (timezone-aware datetimes produce
+                    # strings with +00:00 that compare incorrectly against
+                    # the plain YYYY-MM-DD HH:MM:SS values stored on disk).
+                    cutoff = _datetime.utcnow() - timedelta(seconds=60)
+                    stale = Node.query.filter(
+                        Node.status != 'offline',
+                        Node.last_seen < cutoff
+                    ).all()
+                    for node in stale:
+                        node.status = 'offline'
+                        node.current_task_id = None
+
+                    if stale:
+                        stale_ids = [n.id for n in stale]
+                        db.session.commit()
+                        _repend_tasks_for_offline_nodes(stale_ids)
+            except Exception as exc:
+                # Never crash the monitor thread
+                pass
+
+    t = threading.Thread(target=_monitor, name='heartbeat-monitor', daemon=True)
+    t.start()
+
+
+# Start monitor after first request context is available.
+# We use a flag so it only fires once even in debug reload mode.
+_monitor_started = False
+
+@app.before_request
+def _ensure_monitor_running():
+    global _monitor_started
+    if not _monitor_started:
+        _monitor_started = True
+        _start_heartbeat_monitor(app)
+
 
 if __name__ == '__main__':
     import os as _os

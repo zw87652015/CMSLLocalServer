@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Node Computers' if g.language == 'en' else '节点计算机' }} — {{ g.get_text('title') }}{% endblock %}
+
+{% block content %}
+<div class="page-title">{{ 'Node Computers' if g.language == 'en' else '节点计算机' }}</div>
+
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    {% for message in messages %}
+      <div class="alert alert-info alert-dismissible fade show" role="alert">
+        {{ message }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+      </div>
+    {% endfor %}
+  {% endif %}
+{% endwith %}
+
+<div class="card">
+  <div class="card-header">
+    <i class="fas fa-network-wired" style="color:var(--c-blue);font-size:14px;"></i>
+    <h5>{{ 'Registered Nodes' if g.language == 'en' else '已注册节点' }}
+      <span style="font-weight:400;font-size:13px;color:var(--c-text-sec);margin-left:6px;">
+        ({{ nodes|length }})
+      </span>
+    </h5>
+    <button class="btn btn-secondary btn-sm ms-auto" onclick="location.reload()">
+      <i class="fas fa-sync-alt"></i>
+      {{ g.get_text('refresh') }}
+    </button>
+  </div>
+
+  {% if not nodes %}
+  <div class="card-body" style="text-align:center;padding:40px;color:var(--c-text-sec);">
+    <i class="fas fa-network-wired" style="font-size:48px;opacity:.2;display:block;margin-bottom:16px;"></i>
+    {{ 'No nodes registered. Run node_client.py on each compute node.' if g.language == 'en'
+       else '尚无节点注册。请在各计算节点上运行 node_client.py。' }}
+  </div>
+  {% else %}
+  <div class="table-responsive">
+    <table class="table table-hover">
+      <thead>
+        <tr>
+          <th>{{ 'Hostname' if g.language == 'en' else '主机名' }}</th>
+          <th>{{ 'IP Address' if g.language == 'en' else 'IP 地址' }}</th>
+          <th>{{ 'COMSOL Versions' if g.language == 'en' else 'COMSOL 版本' }}</th>
+          <th>{{ 'CPU' if g.language == 'en' else 'CPU' }}</th>
+          <th>{{ 'Disk Free' if g.language == 'en' else '磁盘剩余' }}</th>
+          <th>{{ g.get_text('status') }}</th>
+          <th>{{ 'Current Task' if g.language == 'en' else '当前任务' }}</th>
+          <th>{{ 'Last Seen' if g.language == 'en' else '最后活跃' }}</th>
+          <th>{{ g.get_text('actions') }}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for node in nodes %}
+        <tr>
+          <td style="font-weight:500;">
+            <i class="fas fa-server" style="color:var(--c-text-sec);font-size:12px;margin-right:6px;"></i>
+            {{ node.hostname }}
+          </td>
+          <td style="font-family:monospace;font-size:13px;">{{ node.ip_address }}</td>
+          <td>
+            {% for ver in node.comsol_versions %}
+              <span class="badge" style="background:var(--c-bg-warm);color:var(--c-text-sec);border:1px solid var(--c-border);margin-right:4px;">
+                {{ ver }}
+              </span>
+            {% else %}
+              <span style="color:var(--c-text-sec);font-size:12px;">—</span>
+            {% endfor %}
+          </td>
+          <td style="min-width:200px;max-width:280px;">
+            {% if node.cpu_model %}
+            <div style="font-size:13px;line-height:1.4;word-break:break-word;">{{ node.cpu_model }}</div>
+            {% endif %}
+            <div style="font-size:12px;color:var(--c-text-sec);margin-top:3px;">{{ node.cpu_cores }} {{ 'cores' if g.language == 'en' else '核' }}</div>
+          </td>
+          <td style="font-size:13px;">
+            {% if node.disk_free_gb is not none and node.disk_free_gb != none %}
+              {{ "%.1f"|format(node.disk_free_gb) }} GB
+            {% else %}
+              <span style="color:var(--c-text-sec);">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if node.status == 'online' %}
+              <span class="badge bg-success">{{ 'Online' if g.language == 'en' else '在线' }}</span>
+            {% elif node.status == 'busy' %}
+              <span class="badge bg-warning text-dark">{{ 'Busy' if g.language == 'en' else '忙碌' }}</span>
+            {% else %}
+              <span class="badge bg-secondary">{{ 'Offline' if g.language == 'en' else '离线' }}</span>
+            {% endif %}
+          </td>
+          <td style="font-size:12px;color:var(--c-text-sec);">
+            {% if node.current_task_id %}
+              <code style="font-size:11px;">{{ node.current_task_id[:8] }}…</code>
+            {% else %}
+              —
+            {% endif %}
+          </td>
+          <td style="font-size:13px;color:var(--c-text-sec);">
+            {{ node.last_seen|localtime }}
+          </td>
+          <td>
+            <form method="POST"
+                  action="{{ url_for('admin_remove_node', node_id=node.id) }}"
+                  onsubmit="return confirm('{{ 'Remove this node?' if g.language == 'en' else '确认移除此节点？' }}')">
+              <button type="submit" class="btn btn-outline-danger btn-sm">
+                <i class="fas fa-trash"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Setup instructions -->
+<div class="card mt-4">
+  <div class="card-header">
+    <i class="fas fa-terminal" style="color:var(--c-blue);font-size:14px;"></i>
+    <h5>{{ 'Node Setup Instructions' if g.language == 'en' else '节点部署说明' }}</h5>
+  </div>
+  <div class="card-body">
+    <ol style="color:var(--c-text-sec);line-height:1.8;">
+      {% if g.language == 'en' %}
+      <li>Copy <code>node_client.py</code> to the node computer.</li>
+      <li>Install dependencies: <code>pip install requests psutil</code></li>
+      <li>Run the client, pointing it at this server:
+        <pre style="margin-top:8px;background:var(--c-bg-warm);padding:10px;border-radius:6px;font-size:13px;">python node_client.py --server http://{{ request.host }}</pre>
+      </li>
+      <li>Optional — override COMSOL paths if they differ from defaults:
+        <pre style="background:var(--c-bg-warm);padding:10px;border-radius:6px;font-size:13px;">python node_client.py --server http://{{ request.host }} ^
+    --comsol-63 "D:\COMSOL63\bin\win64\comsolbatch.exe" ^
+    --comsol-62 "D:\COMSOL62\bin\win64\comsolbatch.exe"</pre>
+      </li>
+      <li>The node will appear in this table within 15 seconds.</li>
+      {% else %}
+      <li>将 <code>node_client.py</code> 复制到节点计算机。</li>
+      <li>安装依赖：<code>pip install requests psutil</code></li>
+      <li>运行客户端，指向本服务器：
+        <pre style="margin-top:8px;background:var(--c-bg-warm);padding:10px;border-radius:6px;font-size:13px;">python node_client.py --server http://{{ request.host }}</pre>
+      </li>
+      <li>可选 — 若 COMSOL 路径与默认不同，可手动指定：
+        <pre style="background:var(--c-bg-warm);padding:10px;border-radius:6px;font-size:13px;">python node_client.py --server http://{{ request.host }} ^
+    --comsol-63 "D:\COMSOL63\bin\win64\comsolbatch.exe" ^
+    --comsol-62 "D:\COMSOL62\bin\win64\comsolbatch.exe"</pre>
+      </li>
+      <li>节点将在 15 秒内出现在上方列表中。</li>
+      {% endif %}
+    </ol>
+  </div>
+</div>
+
+<script>
+// Auto-refresh every 15 s to show live node status
+setTimeout(() => location.reload(), 15000);
+</script>
+{% endblock %}
