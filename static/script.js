@@ -372,7 +372,6 @@ function isZh() {
 function statusBadge(status) {
     const map = {
         pending:   ['bg-secondary', isZh() ? '待处理' : 'Pending'],
-        queued:    ['bg-info',      isZh() ? '队列中' : 'Queued'],
         running:   ['bg-warning',   isZh() ? '运行中' : 'Running'],
         completed: ['bg-success',   isZh() ? '已完成' : 'Completed'],
         failed:    ['bg-danger',    isZh() ? '失败'   : 'Failed'],
@@ -393,7 +392,7 @@ function taskActions(task) {
     if (task.download_url) {
         html += `<a href="${escHtml(task.download_url)}" class="btn btn-success btn-sm" title="${isZh() ? '下载' : 'Download'}"><i class="fas fa-download"></i></a> `;
     }
-    if (['pending','queued','running'].includes(task.status)) {
+    if (['pending','running'].includes(task.status)) {
         html += `<button class="btn btn-warning btn-sm" onclick="cancelTask('${task.id}')" title="${isZh() ? '取消' : 'Cancel'}"><i class="fas fa-stop"></i></button> `;
     }
     html += `<button class="btn btn-secondary btn-sm" onclick="viewLogs('${task.id}')" title="${isZh() ? '日志' : 'Logs'}"><i class="fas fa-file-lines"></i></button> `;

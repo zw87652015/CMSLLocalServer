@@ -102,18 +102,19 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
             raise Exception(f"Task {task_id} not found in database")
 
         # If the task was cancelled/deleted before we got to run it, exit cleanly.
-        if task.status not in ('pending', 'queued'):
+        if task.status != 'pending':
             return f"Task {task_id} already in status '{task.status}', skipping"
 
         # Enforce single-local-task rule: if another local task is already running,
-        # put this one back to queued and let process_next_queued_task handle ordering.
+        # put this one back to pending and let process_next_pending_task handle ordering.
         other_running = Task.query.filter(
             Task.status == 'running',
             Task.assigned_node_id.is_(None),
             Task.id != task_id,
         ).count()
         if other_running > 0:
-            task.status = 'queued'
+            task.status = 'pending'
+            task.celery_task_id = None
             db.session.commit()
             return f"Another local task is already running; task {task_id} re-queued"
 
@@ -228,6 +229,14 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                         update_system_stats.delay()
                     except Exception:
                         pass  # Don't fail the main task if stats update fails
+                        
+                    # Dispatch any remaining pending tasks
+                    try:
+                        from app import _dispatch_pending_node_tasks
+                        _dispatch_pending_node_tasks()
+                    except Exception:
+                        pass
+                        
                     return {
                         'status': 'completed',
                         'result_file': str(output_file_path),
@@ -248,6 +257,14 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                     update_system_stats.delay()
                 except Exception:
                     pass  # Don't fail the main task if stats update fails
+                    
+                # Dispatch any remaining pending tasks
+                try:
+                    from app import _dispatch_pending_node_tasks
+                    _dispatch_pending_node_tasks()
+                except Exception:
+                    pass
+                    
                 raise Exception(error_msg)
                 
         except Exception as e:
@@ -257,6 +274,13 @@ def run_comsol_simulation(self, task_id, input_file_path, output_file_path):
                 db.session.refresh(task)
                 if task.status != 'cancelled':
                     task.mark_failed(error_msg)
+                    
+            # Dispatch any remaining pending tasks
+            try:
+                from app import _dispatch_pending_node_tasks
+                _dispatch_pending_node_tasks()
+            except Exception:
+                pass
             
             # Log error to file if possible
             try:
@@ -322,8 +346,8 @@ def kill_comsol_process(process_id):
         return f"Failed to kill process {process_id}: {str(e)}"
 
 @celery.task
-def process_next_queued_task():
-    """Process the next queued task after a cancellation"""
+def process_next_pending_task():
+    """Process the next pending task after a cancellation"""
     with app.app_context():
         # Do not start a new local task if one is already running locally.
         local_running = Task.query.filter_by(
@@ -332,24 +356,29 @@ def process_next_queued_task():
         if local_running > 0:
             return "A local task is already running"
 
-        # Find the next pending/queued task that has no node assigned
+        # Find the next pending task that has no node assigned
         # (node-assigned tasks are handled by the node poll endpoint).
         candidate = Task.query.filter(
-            Task.status.in_(['pending', 'queued']),
+            Task.status == 'pending',
             Task.assigned_node_id.is_(None),
         ).order_by(Task.created_at).first()
 
         if not candidate:
-            return "No queued tasks to process"
+            return "No pending tasks to process"
 
         rows_updated = (
             db.session.query(Task)
             .filter(
                 Task.id == candidate.id,
-                Task.status.in_(['pending', 'queued']),
+                Task.status == 'pending',
                 Task.assigned_node_id.is_(None),
             )
-            .update({'status': 'queued'}, synchronize_session=False)
+            # Actually, we don't need to change status since it stays pending until mark_started
+            # but we need to mark it as picked up by Celery.
+            # However, `process_next_pending_task` just submits it to Celery.
+            # To avoid duplicate submission, we could just submit it and trust celery.
+            # Let's keep it 'pending'
+            .update({'status': 'pending'}, synchronize_session=False)
         )
         db.session.commit()
 
@@ -381,7 +410,7 @@ def process_next_queued_task():
         next_task.celery_task_id = celery_task.id
         db.session.commit()
 
-        return f"Started next queued task: {next_task.id}"
+        return f"Started next pending task: {next_task.id}"
 
 @celery.task
 def update_system_stats():

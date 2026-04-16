@@ -14,7 +14,7 @@ A LAN-based web server for managing and distributing COMSOL® batch simulations.
 - **Task queue** — RabbitMQ/Celery-backed queue with normal and high priority
 - **Distributed nodes** — run simulations on remote Windows machines via `node_client.py`; nodes register themselves, claim tasks, and report progress automatically
 - **Node monitoring** — live status, CPU model, core count, disk free space per node
-- **Automatic recovery** — tasks re-queued instantly when a node goes offline mid-run; reassigned to another available node or the local server
+- **Automatic recovery** — tasks re-pending instantly when a node goes offline mid-run; reassigned to another available node or the local server
 - **Real-time progress** — per-task progress bar and step description, updated live
 - **Result delivery** — direct download; if a result file is too large to upload, the server requests a re-upload from the node on demand
 - **Cancelled task re-queue** — cancelled tasks can be re-submitted without re-uploading the file

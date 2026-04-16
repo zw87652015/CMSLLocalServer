@@ -28,13 +28,12 @@
                         {{ task.original_filename }}
                     </td>
                     <td>
-                        {% set sc = {'completed':'bg-success','failed':'bg-danger','running':'bg-warning','queued':'bg-info','cancelled':'bg-dark'} %}
+                        {% set sc = {'completed':'bg-success','failed':'bg-danger','running':'bg-warning','cancelled':'bg-dark'} %}
                         <span class="badge {{ sc.get(task.status, 'bg-secondary') }}">
                             {{ g.get_text('completed') if task.status == 'completed' else
                                g.get_text('failed') if task.status == 'failed' else
                                g.get_text('running') if task.status == 'running' else
                                g.get_text('cancelled') if task.status == 'cancelled' else
-                               g.get_text('queued') if task.status == 'queued' else
                                g.get_text('pending_status') }}
                         </span>
                     </td>

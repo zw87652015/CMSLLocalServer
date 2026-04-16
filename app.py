@@ -150,8 +150,7 @@ TRANSLATIONS = {
         'completed': '已完成',
         'failed': '失败',
         'cancelled': '已取消',
-        'queued': '队列中',
-        'pending_status': '待处理',
+        'pending': '待处理',
         'normal': '普通',
         'high': '高优先级',
         
@@ -336,8 +335,7 @@ TRANSLATIONS = {
         'completed': 'Completed',
         'failed': 'Failed',
         'cancelled': 'Cancelled',
-        'queued': 'Queued',
-        'pending_status': 'Pending',
+        'pending': 'Pending',
         'normal': 'Normal',
         'high': 'High Priority',
         
@@ -568,7 +566,7 @@ def admin_dashboard():
     """Admin dashboard"""
     users = User.query.all()
     total_tasks = Task.query.count()
-    active_tasks = Task.query.filter(Task.status.in_(['pending', 'queued', 'running'])).count()
+    active_tasks = Task.query.filter(Task.status.in_(['pending', 'running'])).count()
     nodes = Node.query.order_by(Node.registered_at).all()
     online_nodes = sum(1 for n in nodes if n.status in ('online', 'busy'))
     return render_template('admin/dashboard.html', users=users, total_tasks=total_tasks,
@@ -882,7 +880,7 @@ def queue_status():
     """Global queue status page"""
     from datetime import date
     
-    pending_tasks = Task.query.filter(Task.status.in_(['pending', 'queued'])).order_by(Task.created_at).all()
+    pending_tasks = Task.query.filter(Task.status == 'pending').order_by(Task.created_at).all()
     running_tasks = Task.query.filter_by(status='running').order_by(Task.started_at).all()
     
     # Calculate real-time statistics
@@ -955,7 +953,7 @@ def api_stats():
     from datetime import date
     
     # Calculate real-time statistics
-    pending_tasks = Task.query.filter(Task.status.in_(['pending', 'queued'])).count()
+    pending_tasks = Task.query.filter(Task.status == 'pending').count()
     running_tasks = Task.query.filter_by(status='running').count()
     
     # Get today's completed/failed tasks
@@ -1024,8 +1022,8 @@ def view_logs(task_id):
     
     # Node tasks without a saved log file — show status-appropriate message
     if task and task.assigned_node_id and not task.log_filename:
-        if task.status in ('queued', 'pending'):
-            return jsonify({'logs': '[Task is queued and waiting to run on a node computer]'})
+        if task.status == 'pending':
+            return jsonify({'logs': '[Task is pending and waiting to run on a node computer]'})
         if task.status == 'running':
             return jsonify({'logs': '[Task is currently running on node computer — logs will be available after completion]'})
         if task.error_log:
@@ -1387,15 +1385,15 @@ def node_task_poll():
     # 1. Check for a task already assigned to this node
     task = Task.query.filter_by(
         assigned_node_id=node.id,
-        status='queued'
+        status='pending'
     ).order_by(Task.created_at).first()
 
-    # 2. If none, try to claim an unassigned queued task (pull model)
+    # 2. If none, try to claim an unassigned pending task (pull model)
     if not task and node.status != 'busy':
         for ver in node.comsol_versions:
             candidate = Task.query.filter_by(
                 assigned_node_id=None,
-                status='queued',
+                status='pending',
                 comsol_version=ver,
             ).order_by(Task.created_at).first()
             if candidate:
@@ -1722,10 +1720,10 @@ def admin_remove_node(node_id):
 # ---------------------------------------------------------------------------
 
 def _dispatch_pending_node_tasks():
-    """Assign unallocated pending/queued tasks to an online node, or fall back
+    """Assign unallocated pending tasks to an online node, or fall back
     to the local Celery worker if no suitable node is available."""
     waiting = Task.query.filter(
-        Task.status.in_(['pending', 'queued']),
+        Task.status == 'pending',
         Task.assigned_node_id.is_(None),
     ).order_by(Task.created_at).all()
 
@@ -1748,10 +1746,7 @@ def _dispatch_pending_node_tasks():
                     except Exception:
                         pass
                 task.assigned_node_id = node.id
-                if task.status != 'queued':
-                    task.mark_queued()
-                else:
-                    db.session.commit()
+                db.session.commit()
                 assigned = True
                 break
 
@@ -1786,7 +1781,7 @@ def _dispatch_pending_node_tasks():
                   else Config.NORMAL_PRIORITY_QUEUE,
         )
         task.celery_task_id = celery_task.id
-        task.mark_queued()
+        db.session.commit()
         # Only one local task at a time — stop after dispatching one
         break
 
@@ -1807,7 +1802,7 @@ def _dispatch_task(task, upload_path, result_path):
     if chosen:
         # Assign to node — it will poll and pick it up
         task.assigned_node_id = chosen.id
-        task.mark_queued()
+        db.session.commit()
         # No Celery task needed; node polls /api/nodes/task/poll
         return {'mode': 'node', 'node_id': chosen.id, 'node_hostname': chosen.hostname}
     else:
@@ -1819,18 +1814,18 @@ def _dispatch_task(task, upload_path, result_path):
                   else Config.NORMAL_PRIORITY_QUEUE
         )
         task.celery_task_id = celery_task.id
-        task.mark_queued()
+        db.session.commit()
         return {'mode': 'local', 'celery_task_id': celery_task.id}
 
 
 # ---------------------------------------------------------------------------
 def _repend_tasks_for_offline_nodes(node_ids: list):
-    """Re-pend any running/queued tasks whose assigned node just went offline,
+    """Re-pend any running/pending tasks whose assigned node just went offline,
     then try to dispatch them to remaining online nodes."""
     if not node_ids:
         return
     orphaned = Task.query.filter(
-        Task.status.in_(['queued', 'running']),
+        Task.status.in_(['pending', 'running']),
         Task.assigned_node_id.in_(node_ids),
     ).all()
     for stuck in orphaned:

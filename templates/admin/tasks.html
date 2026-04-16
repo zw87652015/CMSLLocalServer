@@ -6,7 +6,7 @@
 
 <!-- Summary cards -->
 {% set completed_n = tasks|selectattr('status','equalto','completed')|list|length %}
-{% set running_n   = tasks|selectattr('status','in',['running','queued'])|list|length %}
+{% set running_n   = tasks|selectattr('status','in',['running'])|list|length %}
 {% set failed_n    = tasks|selectattr('status','equalto','failed')|list|length %}
 
 <div class="row g-3 mb-4">
@@ -79,13 +79,12 @@
                         {{ task.original_filename }}
                     </td>
                     <td>
-                        {% set sc = {'pending':'bg-secondary','queued':'bg-info','running':'bg-warning','completed':'bg-success','failed':'bg-danger','cancelled':'bg-dark'} %}
+                        {% set sc = {'pending':'bg-secondary','running':'bg-warning','completed':'bg-success','failed':'bg-danger','cancelled':'bg-dark'} %}
                         <span class="badge {{ sc.get(task.status, 'bg-secondary') }}">
                             {{ g.get_text('completed') if task.status == 'completed' else
                                g.get_text('failed') if task.status == 'failed' else
                                g.get_text('running') if task.status == 'running' else
                                g.get_text('cancelled') if task.status == 'cancelled' else
-                               g.get_text('queued') if task.status == 'queued' else
                                g.get_text('pending_status') }}
                         </span>
                     </td>

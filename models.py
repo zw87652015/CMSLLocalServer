@@ -100,13 +100,12 @@ class Task(db.Model):
     file_size = db.Column(db.Integer)
     
     # Task status and timing
-    status = db.Column(db.String(50), default='pending')  # pending, queued, running, completed, failed
+    status = db.Column(db.String(50), default='pending')  # pending, running, completed, failed, cancelled
     priority = db.Column(db.String(20), default='normal')  # normal, high
     comsol_version = db.Column(db.String(10), default='6.3')  # COMSOL version (6.2, 6.3, etc.)
     
     # Timestamps
     created_at = db.Column(db.DateTime, default=utcnow)
-    queued_at = db.Column(db.DateTime)
     started_at = db.Column(db.DateTime)
     completed_at = db.Column(db.DateTime)
     
@@ -137,7 +136,7 @@ class Task(db.Model):
     
     @property
     def is_active(self):
-        return self.status in ['queued', 'running']
+        return self.status in ['pending', 'running']
     
     @property
     def is_completed(self):
@@ -149,16 +148,11 @@ class Task(db.Model):
             self.current_step = step
         db.session.commit()
     
-    def mark_queued(self):
-        self.status = 'queued'
-        self.queued_at = utcnow()
-        if self.created_at:
-            self.queue_time = (self.queued_at - _ensure_aware(self.created_at)).total_seconds()
-        db.session.commit()
-    
     def mark_started(self):
         self.status = 'running'
         self.started_at = utcnow()
+        if self.created_at:
+            self.queue_time = (self.started_at - _ensure_aware(self.created_at)).total_seconds()
         db.session.commit()
     
     def mark_completed(self, result_filename=None):
@@ -192,7 +186,7 @@ class Task(db.Model):
     
     def can_be_cancelled(self):
         """Check if task can be cancelled"""
-        return self.status in ['pending', 'queued', 'running']
+        return self.status in ['pending', 'running']
     
     def cleanup_files(self):
         """Clean up associated files when task is deleted"""
