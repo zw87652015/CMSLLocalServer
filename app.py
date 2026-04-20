@@ -737,7 +737,7 @@ def upload_file():
         return jsonify({
             'success': True,
             'task_id': task.id,
-            'message': 'File uploaded and queued for processing',
+            'message': 'File uploaded and pending for processing',
             'dispatch': dispatch_info,
         })
         
@@ -1063,7 +1063,7 @@ def view_logs(task_id):
 @app.route('/task/<task_id>/cancel', methods=['POST'])
 @login_required
 def cancel_task(task_id):
-    """Cancel a running or queued task"""
+    """Cancel a running or pending task"""
     task = Task.query.filter_by(id=task_id, user_id=current_user.id).first()
     
     if not task:
@@ -1630,6 +1630,8 @@ def node_task_fail(task_id):
     task.mark_failed(error_message, error_log)   # commits status = 'failed'
     node.status          = 'online'
     node.current_task_id = None
+
+    # If the file landed on the server, tell the node it can delete its copy
     db.session.commit()
 
     try:
@@ -1771,7 +1773,7 @@ def _dispatch_pending_node_tasks():
         result_path.parent.mkdir(parents=True, exist_ok=True)
 
         if task.celery_task_id:
-            # Already queued in Celery — don't double-submit
+            # Already pending in Celery — don't double-submit
             continue
 
         from tasks import run_comsol_simulation

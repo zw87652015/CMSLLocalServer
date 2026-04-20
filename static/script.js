@@ -162,7 +162,7 @@ function startUpload(formData, filename) {
         }
 
         if (xhr.status >= 200 && xhr.status < 300 && !result.error) {
-            _finishUpload(uid, true, result.message || (isZh() ? '已加入队列' : 'Queued'));
+            _finishUpload(uid, true, result.message || (isZh() ? '已提交' : 'Pending'));
             setTimeout(() => refreshTasks(true), 800);
         } else {
             _finishUpload(uid, false, result.error || `HTTP ${xhr.status}`);
